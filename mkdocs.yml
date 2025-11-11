@@ -1,0 +1,74 @@
+site_name: Multimodal Rag GPT
+repo_name: multimodal-rag-gpt
+repo_url: https://github.com/Tr0ubad0ur/multimodal-rag-gpt.git
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [backend]
+          options:
+            docstring_style: google
+            show_source: true
+            members: []
+  - i18n:
+      docs_structure: folder
+      languages:
+        - locale: ru
+          default: true
+          name: Русский
+          build: true
+        - locale: en
+          name: English
+          build: true
+
+theme:
+  name: material
+  language: ru
+  features:
+    - search.suggest
+    - navigation.tabs
+    - navigation.top
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+    - navigation.sections
+    - navigation.footer
+    - content.action.edit
+    - content.action.view
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/lightbulb-auto
+        name: Системная тема
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: red
+      accent: amber
+      toggle:
+        icon: material/lightbulb
+        name: Тёмная тема
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: red
+      accent: amber
+      toggle:
+        icon: material/lightbulb-outline
+        name: Светлая тема
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/Tr0ubad0ur/multimodal-rag-gpt.git
+
+docs_dir: docs
+site_dir: public
+
+markdown_extensions:
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences
