@@ -39,10 +39,10 @@ jobs:
           uv add mkdocs-material>=9.6.21 mkdocstrings-python>=1.18.2 mkdocs-static-i18n
 
       - name: Build MkDocs site
-        run: uv run mkdocs build --site-dir public
+        run: uv run mkdocs build --strict
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./public
+      # - name: Deploy to GitHub Pages
+      #   uses: peaceiris/actions-gh-pages@v4
+      #   with:
+      #     github_token: ${{ secrets.GITHUB_TOKEN }}
+      #     publish_dir: ./public
