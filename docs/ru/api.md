@@ -23,8 +23,8 @@
 
 ::: core.llm.QwenVisionLLM
 ::: core.llm.QwenVisionLLM.__init__
-::: core.llm.build_messages
-::: core.llm.generate
+::: core.llm.QwenVisionLLM.build_messages
+::: core.llm.QwenVisionLLM.generate
 ::: core.llm.get_llm_response
 
 ## core/load_data.py
