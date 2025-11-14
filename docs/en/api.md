@@ -12,7 +12,7 @@
 
 ## core/create_collection.py
 
-::: core.create_collections.create_collection
+::: core.create_collection.create_collection
 
 ## core/embeddings.py
 
