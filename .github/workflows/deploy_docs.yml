@@ -1,0 +1,50 @@
+name: Deploy Documentation
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  create-pages:
+    runs-on: ubuntu-latest
+
+    # Кэширование зависимостей pip
+    env:
+      UV_CACHE_DIR: .uv-cache
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13' # замените на нужную версию
+
+      - name: Cache pip
+        uses: actions/cache@v3
+        with:
+          path: |
+            ${{ env.UV_CACHE_DIR }}
+            ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y git
+
+      - name: Install Python packages
+        run: |
+          pip install uv
+          uv sync --locked
+          uv add mkdocs-material>=9.6.21 mkdocstrings-python>=1.18.2 mkdocs-static-i18n
+
+      - name: Build MkDocs site
+        run: uv run mkdocs build --site-dir public
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v6
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
