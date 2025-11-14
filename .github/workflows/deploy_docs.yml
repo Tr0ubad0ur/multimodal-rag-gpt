@@ -2,17 +2,23 @@ name: Deploy Documentation
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
+  workflow_dispatch:
+permissions:
+  contents: write
+  pages: write
+  id-token: write
 
 jobs:
-  create-pages:
+  build-pages:
     runs-on: ubuntu-latest
 
     env:
       UV_CACHE_DIR: .uv-cache
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
@@ -39,7 +45,25 @@ jobs:
           uv add mkdocs-material>=9.6.21 mkdocstrings-python>=1.18.2 mkdocs-static-i18n
 
       - name: Build MkDocs site
-        run: uv run mkdocs build --strict
-
-      - name: Deploy to GitHub Pages
         run: uv run mkdocs gh-deploy
+
+  deploy_pages:
+      needs: build_pages
+      environment:
+        name: github-pages
+        url: ${{ steps.deployment.outputs.page_url }}
+      runs-on: ubuntu-latest
+      steps:
+        - name: Checkout
+          uses: actions/checkout@v4
+          with:
+            ref: gh-pages
+        - name: Setup Pages
+          uses: actions/configure-pages@v5
+        - name: Upload artifact
+          uses: actions/upload-pages-artifact@v3
+          with:
+            path: '.'
+        - name: Deploy to GitHub Pages
+          id: deployment
+          uses: actions/deploy-pages@v4
