@@ -10,6 +10,20 @@ VECTOR_SIZE = 384
 DISTANCE_METRIC = Distance.COSINE
 
 def create_collection():
+    """Create a Qdrant collection if it does not already exist.
+
+    This function connects to a local Qdrant instance, checks if a collection
+    with the specified name exists, and creates it with the defined vector size
+    and distance metric if it does not.
+
+    Uses:
+        COLLECTION_NAME (str): Name of the collection to create.
+        VECTOR_SIZE (int): Dimensionality of vectors to store.
+        DISTANCE_METRIC (str): Distance metric for similarity search ('Cosine', 'Euclid', etc.).
+
+    Returns:
+        None
+    """
     client = QdrantClient(host="localhost", port=6333)
 
     # Проверка, существует ли коллекция

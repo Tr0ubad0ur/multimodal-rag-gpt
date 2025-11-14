@@ -102,7 +102,7 @@ project-root/
 
 ```
 
-## Multimodal RAG Pipeline for Medical Imaging
+## 5. Multimodal RAG Pipeline for Medical Imaging
 
 ```mermaid
 flowchart TD
