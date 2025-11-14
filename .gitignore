@@ -1,12 +1,13 @@
 # Python-generated files
-__pycache__/
+**/__pycache__/
 *.egg-info
 *.py[oc]
-*.pyc
+*.py[cod]
 
 # Misс
 .env
 .venv
-.vscode/*
+.vscode/
 !.vscode/extensions.json
 data
+.python-version
