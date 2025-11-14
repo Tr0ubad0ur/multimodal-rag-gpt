@@ -1,7 +1,6 @@
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
-    openai_api_key: str
     qdrant_url: str
     qdrant_text_collection: str = "qdrant_text"
     qdrant_image_collection: str = "qdrant_image"
