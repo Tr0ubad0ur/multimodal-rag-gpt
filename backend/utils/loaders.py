@@ -1,5 +1,8 @@
 from pathlib import Path
 from langchain_community.document_loaders import PyPDFLoader, TextLoader
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Поддерживаемые форматы
 TEXT_EXTENSIONS = [".txt", ".md"]
@@ -21,7 +24,7 @@ def load_documents(path: Path) -> str:
             docs = loader.load()
             docs_text.extend([doc.page_content for doc in docs])
         else:
-            print(f"Пропущен файл {file.name} (не поддерживаемый формат)")
+            logger.info(f'Пропущен файл {file.name} (не поддерживаемый формат)')
 
     # Объединяем все тексты в одну строку
     return "\n".join(docs_text)

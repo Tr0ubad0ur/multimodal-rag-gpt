@@ -1,20 +1,24 @@
+# Загрузка модели
 import torch
 from transformers import AutoModelForVision2Seq, AutoProcessor
 from PIL import Image
 import requests
+import logging
+
+logger = logging.getLogger(__name__)
 
 MODEL_NAME = "Qwen/Qwen2-VL-2B-Instruct"
 
 class QwenVisionLLM:
     def __init__(self):
-        print("🔄 Loading Qwen2-VL-2B-Instruct...")
+        logger.info("🔄 Loading Qwen2-VL-2B-Instruct...")
         self.processor = AutoProcessor.from_pretrained(MODEL_NAME)
         self.model = AutoModelForVision2Seq.from_pretrained(
             MODEL_NAME,
             torch_dtype=torch.float16 if torch.backends.mps.is_available() else torch.float32,
             device_map="auto"
         )
-        print("✅ Qwen2-VL-2B loaded successfully!")
+        logger.info("✅ Qwen2-VL-2B loaded successfully!")
 
     def build_messages(self, prompt, image=None):
         content = []

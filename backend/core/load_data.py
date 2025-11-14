@@ -2,21 +2,18 @@ from pathlib import Path
 from qdrant_client import QdrantClient
 from backend.core.embeddings import text_embedding
 from backend.utils.loaders import load_documents
+import logging
 
-# ----------------------------
-# Настройки
-# ----------------------------
+logger = logging.getLogger(__name__)
+
 COLLECTION_NAME = "documents"
-DATA_FOLDER = Path("data")  # папка с PDF/TXT
+DATA_FOLDER = Path("data/test_data")  # папка с PDF/TXT
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
 
 # Подключение к Qdrant
 client = QdrantClient(host="localhost", port=6333)
 
-# ----------------------------
-# Функции
-# ----------------------------
 def chunk_text(text: str, size=CHUNK_SIZE, overlap=CHUNK_OVERLAP) -> list[str]:
     """
     Разбивает текст на чанки с указанным размером и перекрытием.
@@ -60,13 +57,10 @@ def load_documents_to_qdrant():
             )
             point_id += 1
         if chunks:
-            print(f"✅ Загружено {len(chunks)} чанков из {file_path.name}")
+            logger.info(f'✅ Загружено {len(chunks)} чанков из {file_path.name}')
         else:
-            print(f"⚠ Пропущен {file_path.name} (нет текста)")
+            logger.info(f'⚠ Пропущен {file_path.name}')
 
-# ----------------------------
-# Запуск скрипта
-# ----------------------------
 if __name__ == "__main__":
     load_documents_to_qdrant()
-    print("🎉 Все документы загружены в Qdrant")
+    logger.info('Все документы загружены в Qdrant!')
