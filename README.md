@@ -104,6 +104,7 @@ project-root/
 
 ## Multimodal RAG Pipeline for Medical Imaging
 
+```mermaid
 flowchart TD
 
 %% ----------- INPUT ----------------
@@ -130,3 +131,4 @@ I --> J[LLM (Model-2)<br/>Local or Remote GPU<br/>Qwen3-VL-32B / LLaMA / DeepSee
 %% ----------- OUTPUT ---------------
 J --> K[Final Answer:<br/>Medical reasoning, uncertainty, next steps]
 K --> L[Return Response to User<br/>+ Sources / Similar Cases]
+```
