@@ -45,7 +45,7 @@ jobs:
           uv add mkdocs-material>=9.6.21 mkdocstrings-python>=1.18.2 mkdocs-static-i18n
 
       - name: Build MkDocs site
-        run: uv run mkdocs gh-deploy
+        run: uv run mkdocs --strict
 
   deploy-pages:
       needs: build-pages
