@@ -1,24 +1,27 @@
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pathlib import Path
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 
-IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png"]
+# Поддерживаемые форматы
+TEXT_EXTENSIONS = [".txt", ".md"]
+PDF_EXTENSIONS = [".pdf"]
 
-def load_documents(path: str):
-    docs = []
-    for file in Path(path).glob("*"):
-        if file.suffix.lower() == ".pdf":
+def load_documents(path: Path) -> str:
+    """
+    Загружает все PDF и TXT/MD файлы из папки path и возвращает объединённый текст.
+    """
+    docs_text = []
+
+    for file in path.glob("*"):
+        if file.suffix.lower() in PDF_EXTENSIONS:
             loader = PyPDFLoader(str(file))
-            docs.extend(loader.load())
-        elif file.suffix.lower() in [".txt", ".md"]:
+            docs = loader.load()
+            docs_text.extend([doc.page_content for doc in docs])
+        elif file.suffix.lower() in TEXT_EXTENSIONS:
             loader = TextLoader(str(file))
-            docs.extend(loader.load())
-    return split_documents(docs)
+            docs = loader.load()
+            docs_text.extend([doc.page_content for doc in docs])
+        else:
+            print(f"Пропущен файл {file.name} (не поддерживаемый формат)")
 
-def split_documents(docs):
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-    return splitter.split_documents(docs)
-
-def list_images(path: str):
-    """Собираем пути всех изображений"""
-    return [str(p) for p in Path(path).glob("*") if p.suffix.lower() in IMAGE_EXTENSIONS]
+    # Объединяем все тексты в одну строку
+    return "\n".join(docs_text)

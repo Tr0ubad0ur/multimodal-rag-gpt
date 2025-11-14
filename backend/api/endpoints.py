@@ -1,32 +1,22 @@
-from fastapi import APIRouter, UploadFile, File, Form
-from PIL import Image
-from io import BytesIO
-from backend.core.multimodal_rag import multimodal_rag
+from fastapi import APIRouter
+from pydantic import BaseModel
+from backend.core.multimodal_rag import LocalRAG
+from typing import Optional
 
 router = APIRouter()
+rag = LocalRAG()
 
+class QueryRequest(BaseModel):
+    query: str
+    top_k: int = 5
+    image: Optional[str] = None  # путь или URL
 
 @router.post("/ask_text")
-async def ask_text(question: str):
-    """
-    pure text RAG
-    """
-    result = multimodal_rag(question)
+def ask_text(request: QueryRequest):
+    result = rag.generate_answer(request.query, top_k=request.top_k)
     return result
 
-
 @router.post("/ask_mixed")
-async def ask_mixed(
-    question: str = Form(...),
-    image: UploadFile = File(None)
-):
-    """
-    multimodal RAG: question + optional image
-    """
-    img = None
-    if image:
-        content = await image.read()
-        img = Image.open(BytesIO(content)).convert("RGB")
-
-    result = multimodal_rag(question, image=img)
+def ask_mixed(request: QueryRequest):
+    result = rag.generate_answer(request.query, top_k=request.top_k, image=request.image)
     return result

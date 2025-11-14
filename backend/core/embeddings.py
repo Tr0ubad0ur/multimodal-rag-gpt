@@ -1,7 +1,12 @@
-from langchain.embeddings import OpenAIEmbeddings
-from backend.utils.config import settings
+from sentence_transformers import SentenceTransformer
 
-def text_embedding(text: str):
-    emb = OpenAIEmbeddings(model="text-embedding-3-small", openai_api_key=settings.openai_api_key)
-    v = emb.embed_query(text)
-    return v
+# Загружаем локальную модель для embeddings
+# Можно заменить на любую модель из Hugging Face
+model = SentenceTransformer("all-MiniLM-L6-v2")
+
+def text_embedding(text: str) -> list[float]:
+    """
+    Генерирует embedding для текста локально.
+    """
+    vector = model.encode(text).tolist()  # преобразуем в список float для Qdrant
+    return vector
