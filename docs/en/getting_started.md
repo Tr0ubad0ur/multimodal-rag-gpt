@@ -1,58 +1,58 @@
-# Запуск проекта
+# Project Setup
 
-## 1 Клонирование репозитория и настройка VSCode
+## 1. Cloning the Repository and Setting Up VSCode
 
-Для начала требуется склонировать репозиторий и открыть его.
+First, clone the repository and open it in VSCode.
 
 ```bash
-# Клонирование репозитория с использованием SSH ключа
+# Clone the repository using SSH key
 git clone https://github.com/Tr0ubad0ur/multimodal-rag-gpt.git
 
-# Открытие проекта в VSCode
+# Open the project in VSCode
 code multimodal-rag-gpt
 ```
 
-Теперь требуется установить рекомендуемые расширения VSCode из файла [`.vscode/extensions.json`] (при открытии проекта появится всплывающее окно).
+Next, install the recommended VSCode extensions from the [.vscode/extensions.json] file (a popup will appear when opening the project).
 
-Далее требуется сделать новую ветку, либо использовать существующую согласно GitFlow процессу работы.
+After that, create a new branch or use an existing one according to the GitFlow workflow.
 
-## 2 Создание виртуального окружения
+## 2. Creating a Virtual Environment
 
 ```bash
-# Установка менеджера пакетов UV
+# Install the UV package manager
 curl -LsSf https://astral.sh/uv/install.sh | sh
-# powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" на Windows
+# On Windows: powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
 ```bash
-# Создание виртуальной среды
+# Create a virtual environment
 uv venv
 
-# Активация виртуальной среды
+# Activate the virtual environment
 . .venv/bin/activate
-# .venv\Scripts\activate на Windows
+# On Windows: .venv\Scripts\activate
 ```
 
-> [!note] Глоссарий
-> *pre-commit хуки* — это скрипты, которые автоматически запускаются перед коммитом и проверяют/исправляют код (линтеры, форматирование и т.п.), чтобы в репозиторий попадал только корректный код.
+> [!note] Glossary
+> *pre-commit hooks* — scripts that run automatically before a commit to check or fix the code (linters, formatting, etc.), ensuring only clean code enters the repository.
 
 ```bash
-# Установка pre-commit хуков
+# Install pre-commit hooks
 uv run pre-commit install
 ```
 
 ```bash
-# Установка зависимостей
+# Install project dependencies
 uv sync
 ```
 
-## 3. Запусти векторную базу Qdrant
+## 3. Launch the Qdrant Vector Database
 
 ```bash
 docker run -p 6333:6333 qdrant/qdrant
 ```
 
-## 4. Структура проекта
+## 4. Project Structure
 
 ```bash
 project-root/
