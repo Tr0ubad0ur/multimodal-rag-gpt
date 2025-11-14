@@ -3,7 +3,7 @@
 ## utils/config.py
 
 ::: utils.config.Settings
-::: utils.config.Config
+::: utils.config.Settings.Config
 
 ## utils/loaders.py
 
