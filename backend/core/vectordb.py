@@ -1,7 +1,6 @@
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 from backend.utils.config import settings
-import uuid
 from typing import List, Dict, Any
 
 def get_qdrant() -> QdrantClient:
