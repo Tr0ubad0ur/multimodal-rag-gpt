@@ -47,6 +47,11 @@ jobs:
       - name: Build MkDocs site
         run: uv run mkdocs build --site-dir /home/runner/work/multimodal-rag-gpt/multimodal-rag-gpt/public
 
+      - name: Upload Pages Artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
   deploy-pages:
       needs: build-pages
       environment:
@@ -63,7 +68,7 @@ jobs:
         - name: Upload artifact
           uses: actions/upload-pages-artifact@v3
           with:
-            path: '.'
+            path: '/public'
         - name: Deploy to GitHub Pages
           id: deployment
           uses: actions/deploy-pages@v4
