@@ -107,30 +107,37 @@ project-root/
 ```mermaid
 flowchart TD
 
-subgraph INPUT["Input Stage"]
-    A1[User Image]
-    A2[User Text Query]
-end
+%% -------- Input ----------
+A1[User Image]
+A2[User Text Query]
 
-subgraph FEATURE_EXTRACTION["Feature Extraction"]
-    B1[Vision Encoder<br/>Model-1]
-    B2[Image Caption / Visual Features]
-    B3[Text Embeddings]
-end
+%% -------- Feature Extraction ----------
+B1[Vision Encoder<br/>Model-1]
+B2[Image Caption / Visual Features]
+B3[Text Embeddings]
 
-subgraph KNOWLEDGE_BASE["Knowledge Base (RAG)"]
-    C1[Qdrant Collection]
-    C2[Top-K Retrieved<br/>Medical Cases]
-end
+%% -------- Knowledge Base (RAG) ----------
+C1[Qdrant Collection]
+C2[Top-K Retrieved<br/>Medical Cases]
 
-subgraph GENERATION["Reasoning & Generation"]
-    D1[Prompt Builder]
-    D2[LLM (Model-2)]
-    D3[Final Explanation]
-end
+%% -------- Generation ----------
+D1[Prompt Builder]
+D2[LLM (Model-2)]
+D3[Final Explanation]
 
-A1 --> B1 --> B2 --> B3
+%% -------- Output ----------
+E[Return Answer to User]
+
+%% ----- Connections -----
+A1 --> B1
+B1 --> B2
+B2 --> B3
 A2 --> B3
-B3 --> C1 --> C2 --> D1 --> D2 --> D3
-D3 --> E[User Output]
+
+B3 --> C1
+C1 --> C2
+C2 --> D1
+D1 --> D2
+D2 --> D3
+D3 --> E
 ```
