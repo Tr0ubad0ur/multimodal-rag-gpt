@@ -107,28 +107,30 @@ project-root/
 ```mermaid
 flowchart TD
 
-%% ----------- INPUT ----------------
-A[User Uploads Image<br/>+ Optional Question] --> B[FastAPI Backend]
+subgraph INPUT["Input Stage"]
+    A1[User Image]
+    A2[User Text Query]
+end
 
-%% ----------- VISION MODEL ---------
-B --> C[Vision Model (Model-1)<br/>Qwen2-VL / Qwen3-VL / MedCLIP]
-C --> D[Image Caption:<br/>"Preliminary medical description"]
+subgraph FEATURE_EXTRACTION["Feature Extraction"]
+    B1[Vision Encoder<br/>Model-1]
+    B2[Image Caption / Visual Features]
+    B3[Text Embeddings]
+end
 
-%% ----------- QUERY PREPARATION ----
-D --> E[Embeddings Model<br/>SentenceTransformers]
-E --> F[Query Vector]
+subgraph KNOWLEDGE_BASE["Knowledge Base (RAG)"]
+    C1[Qdrant Collection]
+    C2[Top-K Retrieved<br/>Medical Cases]
+end
 
-%% ----------- VECTOR SEARCH --------
-F --> G[Qdrant Vector DB]
-G --> H[Top-K Similar Medical Cases<br/>Descriptions + Metadata]
+subgraph GENERATION["Reasoning & Generation"]
+    D1[Prompt Builder]
+    D2[LLM (Model-2)]
+    D3[Final Explanation]
+end
 
-%% ----------- PROMPT BUILD ---------
-H --> I[Build RAG Prompt<br/>caption + retrieved context + question]
-
-%% ----------- LLM ------------------
-I --> J[LLM (Model-2)<br/>Local or Remote GPU<br/>Qwen3-VL-32B / LLaMA / DeepSeek]
-
-%% ----------- OUTPUT ---------------
-J --> K[Final Answer:<br/>Medical reasoning, uncertainty, next steps]
-K --> L[Return Response to User<br/>+ Sources / Similar Cases]
+A1 --> B1 --> B2 --> B3
+A2 --> B3
+B3 --> C1 --> C2 --> D1 --> D2 --> D3
+D3 --> E[User Output]
 ```
