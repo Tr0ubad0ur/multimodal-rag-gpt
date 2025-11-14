@@ -43,15 +43,15 @@ theme:
         name: Системная тема
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: red
-      accent: amber
+      primary: green
+      accent: teal
       toggle:
         icon: material/lightbulb
         name: Тёмная тема
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: red
-      accent: amber
+      primary: green
+      accent: teal
       toggle:
         icon: material/lightbulb-outline
         name: Светлая тема
