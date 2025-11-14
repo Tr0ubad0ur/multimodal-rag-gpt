@@ -8,7 +8,6 @@ jobs:
   create-pages:
     runs-on: ubuntu-latest
 
-    # Кэширование зависимостей pip
     env:
       UV_CACHE_DIR: .uv-cache
     steps:
@@ -18,7 +17,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.13' # замените на нужную версию
+          python-version: '3.13'
 
       - name: Cache pip
         uses: actions/cache@v3
