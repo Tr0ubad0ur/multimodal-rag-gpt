@@ -6,9 +6,9 @@ on:
       - main
   workflow_dispatch:
 permissions:
-  contents: read
-  pages: read
-  id-token: read
+  contents: write
+  pages: write
+  id-token: write
 
 jobs:
   build-pages:
