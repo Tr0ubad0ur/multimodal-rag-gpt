@@ -11,3 +11,6 @@
 !.vscode/extensions.json
 data
 .python-version
+
+# Logging
+logs
