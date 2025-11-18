@@ -1,0 +1,23 @@
+qdrant:
+  text_collection: "documents"
+  image_collection: "images"
+  text_vector_size: 384
+  image_vector_size: 512
+
+data:
+  data_folder: "data/test_data"
+  chunk_size: 500
+  chunk_overlap: 50
+  supported_text_extensions: [".txt", ".md"]
+  supported_pdf_extensions: [".pdf"]
+  supported_image_extensions: [".jpg", ".jpeg", ".png"]
+
+llm:
+  model_name: "Qwen/Qwen2-VL-2B-Instruct"
+  max_new_tokens: 300
+
+logging:
+  log_dir: "logs"
+  log_file: "app.log"
+  max_bytes: 1048576
+  backup_count: 1

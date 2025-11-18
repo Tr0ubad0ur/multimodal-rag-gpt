@@ -1,102 +1,137 @@
-from pathlib import Path
-from qdrant_client import QdrantClient
-from backend.core.embeddings import text_embedding
-from backend.utils.loaders import load_documents
 import logging
+from pathlib import Path
+from typing import List
+
+from qdrant_client import QdrantClient
+from utils.config_handler import Config
+
+from backend.core.embeddings import image_embedding_from_path, text_embedding
+
+# Поддерживаемые форматы
+TEXT_EXTENSIONS = Config.text_extensions
+PDF_EXTENSIONS = Config.pdf_extensions
+IMAGE_EXTENSIONS = Config.image_extensions
 
 logger = logging.getLogger(__name__)
 
-COLLECTION_NAME = "documents"
-DATA_FOLDER = Path("data/test_data")  # папка с PDF/TXT
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 50
 
-# Подключение к Qdrant
-client = QdrantClient(host="localhost", port=6333)
+class DataLoader:
+    """Unified loader for text documents and images with optional Qdrant upsert."""
 
-def chunk_text(text: str, size=CHUNK_SIZE, overlap=CHUNK_OVERLAP) -> list[str]:
-    """Split a text string into overlapping chunks.
+    def __init__(
+        self, qdrant_host: str = 'localhost', qdrant_port: int = 6333
+    ) -> None:
+        """Initialize the data loader with Qdrant connection parameters.
 
-    Args:
-        text (str): The input text to split.
-        size (int, optional): Maximum size of each chunk. Defaults to CHUNK_SIZE.
-        overlap (int, optional): Number of overlapping characters between chunks. Defaults to CHUNK_OVERLAP.
+        Args:
+            qdrant_host (str): Qdrant server host.
+            qdrant_port (int): Qdrant server port.
+        """
+        self.client = QdrantClient(host=qdrant_host, port=qdrant_port)
 
-    Returns:
-        list[str]: A list of text chunks.
+    @staticmethod
+    def chunk_text(
+        text: str,
+        size: int = Config.chunk_size,
+        overlap: int = Config.chunk_overlap,
+    ) -> List[str]:
+        """Split text into overlapping chunks."""
+        chunks = []
+        start = 0
+        while start < len(text):
+            end = start + size
+            chunks.append(text[start:end])
+            start += size - overlap
+        return chunks
 
-    Example:
-        >>> chunk_text("abcdefgh", size=3, overlap=1)
-        ['abc', 'cde', 'efg', 'gh']
-    """
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + size
-        chunk = text[start:end]
-        chunks.append(chunk)
-        start += size - overlap
-    return chunks
+    @staticmethod
+    def load_file(file_path: Path) -> str:
+        """Load text from a single file (PDF, TXT, MD)."""
+        text_parts = []
+        if file_path.suffix.lower() in PDF_EXTENSIONS:
+            from langchain_community.document_loaders import PyPDFLoader
 
-def process_file(file_path: Path) -> list[str]:
-    """Load a document and split it into text chunks.
+            loader = PyPDFLoader(str(file_path))
+            docs = loader.load()
+            text_parts.extend([doc.page_content for doc in docs])
+        elif file_path.suffix.lower() in TEXT_EXTENSIONS:
+            from langchain_community.document_loaders import TextLoader
 
-    Args:
-        file_path (Path): Path to the document file (txt, pdf, etc.).
-
-    Returns:
-        list[str]: List of text chunks extracted from the document.
-
-    Notes:
-        - Uses `load_documents` to read text from the file.
-        - Returns an empty list if the document is empty or unsupported.
-    """
-    text = load_documents(file_path)
-    if not text:
-        return []
-    return chunk_text(text)
-
-def load_documents_to_qdrant():
-    """Load all documents from DATA_FOLDER into a Qdrant collection as vectors.
-
-    Reads all files recursively, splits them into chunks, converts each chunk
-    to an embedding vector, and upserts it into the Qdrant collection.
-
-    Uses:
-        DATA_FOLDER (Path): Folder containing documents.
-        COLLECTION_NAME (str): Qdrant collection name.
-        client (QdrantClient): Qdrant client instance.
-        text_embedding (Callable): Function to convert text to vector.
-
-    Returns:
-        None
-
-    Notes:
-        - Each chunk is stored with an incremental integer ID and payload containing
-          the text and source file path.
-        - Logs the number of chunks processed for each file.
-    """
-    all_files = list(DATA_FOLDER.glob("**/*"))
-    point_id = 0
-
-    for file_path in all_files:
-        chunks = process_file(file_path)
-        for chunk in chunks:
-            vector = text_embedding(chunk)
-            client.upsert(
-                collection_name=COLLECTION_NAME,
-                points=[{
-                    "id": point_id,
-                    "vector": vector,
-                    "payload": {"text": chunk, "source": str(file_path)}
-                }]
-            )
-            point_id += 1
-        if chunks:
-            logger.info(f'✅ Загружено {len(chunks)} чанков из {file_path.name}')
+            loader = TextLoader(str(file_path))
+            docs = loader.load()
+            text_parts.extend([doc.page_content for doc in docs])
         else:
-            logger.info(f'⚠ Пропущен {file_path.name}')
+            logger.info(f'Skipped unsupported file {file_path.name}')
+        return '\n'.join(text_parts)
 
-if __name__ == "__main__":
-    load_documents_to_qdrant()
-    logger.info('Все документы загружены в Qdrant!')
+    @staticmethod
+    def list_images(folder: Path) -> List[Path]:
+        """List all image paths in a folder."""
+        return [
+            p for p in folder.glob('*') if p.suffix.lower() in IMAGE_EXTENSIONS
+        ]
+
+    def process_file(self, file_path: Path) -> List[str]:
+        """Process a single text document into chunks."""
+        text = self.load_file(file_path)
+        if not text:
+            return []
+        return self.chunk_text(text)
+
+    def load_folder_to_qdrant(
+        self,
+        folder: Path,
+        collection_name: str,
+        embed_type: str = 'text',  # "text" or "image"
+    ) -> None:
+        """Load all documents or images from folder into Qdrant."""
+        all_files = list(folder.glob('*'))
+        point_id = 0
+
+        for file_path in all_files:
+            if (
+                embed_type == 'text'
+                and file_path.suffix.lower()
+                in TEXT_EXTENSIONS + PDF_EXTENSIONS
+            ):
+                chunks = self.process_file(file_path)
+                for chunk in chunks:
+                    vector = text_embedding(chunk)
+                    self.client.upsert(
+                        collection_name=collection_name,
+                        points=[
+                            {
+                                'id': point_id,
+                                'vector': vector,
+                                'payload': {
+                                    'text': chunk,
+                                    'source': str(file_path),
+                                },
+                            }
+                        ],
+                    )
+                    point_id += 1
+                if chunks:
+                    logger.info(
+                        f'✅ Uploaded {len(chunks)} text chunks from {file_path.name}'
+                    )
+                else:
+                    logger.info(f'⚠ Skipped empty text file {file_path.name}')
+
+            elif (
+                embed_type == 'image'
+                and file_path.suffix.lower() in IMAGE_EXTENSIONS
+            ):
+                vector = image_embedding_from_path(str(file_path))
+                self.client.upsert(
+                    collection_name=collection_name,
+                    points=[
+                        {
+                            'id': point_id,
+                            'vector': vector,
+                            'payload': {'source': str(file_path)},
+                        }
+                    ],
+                )
+                logger.info(f'✅ Uploaded image {file_path.name}')
+                point_id += 1

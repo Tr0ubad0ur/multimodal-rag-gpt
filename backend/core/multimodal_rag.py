@@ -1,8 +1,13 @@
+from typing import Any, Dict, List
+
 from qdrant_client import QdrantClient
+from utils.config_handler import Config
+
 from backend.core.embeddings import text_embedding
 from backend.core.llm import get_llm_response
 
-COLLECTION_NAME = "documents"
+COLLECTION_NAME = Config.qdrant_text_collection
+
 
 class LocalRAG:
     """Local Retrieval-Augmented Generation (RAG) pipeline using Qdrant and a local LLM.
@@ -10,11 +15,12 @@ class LocalRAG:
     Attributes:
         client (QdrantClient): Client to connect to the local Qdrant vector database.
     """
-    def __init__(self):
-        """Initialize the LocalRAG pipeline by connecting to the Qdrant instance."""
-        self.client = QdrantClient(host="localhost", port=6333)
 
-    def retrieve(self, query: str, top_k: int = 5):
+    def __init__(self) -> None:
+        """Initialize the LocalRAG pipeline by connecting to the Qdrant instance."""
+        self.client = QdrantClient(host='localhost', port=6333)
+
+    def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, str]]:
         """Retrieve top-K most similar documents from Qdrant for a given query.
 
         Args:
@@ -30,17 +36,21 @@ class LocalRAG:
         results = self.client.search(
             collection_name=COLLECTION_NAME,
             query_vector=query_vector,
-            limit=top_k
+            limit=top_k,
         )
         docs = []
         for r in results:
-            docs.append({
-                "text": r.payload.get("text", ""),
-                "source": r.payload.get("source", "")
-            })
+            docs.append(
+                {
+                    'text': r.payload.get('text', ''),
+                    'source': r.payload.get('source', ''),
+                }
+            )
         return docs
 
-    def generate_answer(self, query: str, top_k: int = 5, image=None):
+    def generate_answer(
+        self, query: str, top_k: int = 5, image=None
+    ) -> Dict[str, Any]:
         """Generate an answer using the local LLM based on the query and optionally an image.
 
         Args:
@@ -55,4 +65,4 @@ class LocalRAG:
         """
         docs = self.retrieve(query, top_k)
         answer_text = get_llm_response(query, context=docs, image=image)
-        return {"answer": answer_text, "retrieved_docs": docs}
+        return {'answer': answer_text, 'retrieved_docs': docs}

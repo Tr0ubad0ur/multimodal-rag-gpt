@@ -1,9 +1,11 @@
-# Делаем ембеддинги
-from sentence_transformers import SentenceTransformer
+from typing import List
+
 from PIL import Image
+from sentence_transformers import SentenceTransformer
 
 # Загружаем локальную модель для embeddings
-model = SentenceTransformer("all-MiniLM-L6-v2")
+model = SentenceTransformer('all-MiniLM-L6-v2')
+
 
 def text_embedding(text: str) -> list[float]:
     """Generate an embedding vector for a given text string.
@@ -18,12 +20,17 @@ def text_embedding(text: str) -> list[float]:
         - This embedding can be stored in a vector database like Qdrant.
         - Ensure the model used for text embeddings is compatible with your retrieval pipeline.
     """
-    vector = model.encode(text).tolist()  # преобразуем в список float для Qdrant
+    vector = model.encode(
+        text
+    ).tolist()  # преобразуем в список float для Qdrant
     return vector
 
-#TODO: check this
-_model = SentenceTransformer("clip-ViT-B-32")
-def image_embedding_from_path(image_path: str):
+
+# TODO: check this
+_model = SentenceTransformer('clip-ViT-B-32')
+
+
+def image_embedding_from_path(image_path: str) -> List[float]:
     """Generate an embedding vector for an image from a file path.
 
     Args:
@@ -37,6 +44,6 @@ def image_embedding_from_path(image_path: str):
         - Uses a CLIP-based model ("clip-ViT-B-32") for generating visual embeddings.
         - Embeddings can be stored in Qdrant or compared with other image embeddings.
     """
-    img = Image.open(image_path).convert("RGB")
+    img = Image.open(image_path).convert('RGB')
     vector = _model.encode(img, convert_to_numpy=True).tolist()
     return vector

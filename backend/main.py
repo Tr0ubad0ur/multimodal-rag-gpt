@@ -1,22 +1,22 @@
-from fastapi import FastAPI
-from backend.api.endpoints import router
-#TODO transfer this to another place (maybe)
 import logging
+from typing import Dict
+
+from fastapi import FastAPI
 from utils.log_config import setup_logging
+
+from backend.api.endpoints import router
 
 setup_logging()
 logger = logging.getLogger(__name__)
-#
 
-app = FastAPI(
-    title="Multimodal RAG Backend",
-    version="0.1"
-)
+
+app = FastAPI(title='Multimodal RAG Backend', version='0.1')
 
 app.include_router(router)
 
-@app.get("/")
-def root():
+
+@app.get('/')
+def root() -> Dict[str, str]:
     """Health check endpoint.
 
     Returns:
@@ -27,4 +27,4 @@ def root():
             "message": "Multimodal RAG backend is running!!!"
         }
     """
-    return {"message": "Multimodal RAG backend is running!!!"}
+    return {'message': 'Multimodal RAG backend is running!!!'}

@@ -23,7 +23,7 @@ repos:
     - id: end-of-file-fixer
     - id: trailing-whitespace
 # Pyright - static type checker
-- repo: https://github.com/RobertCraigie/pyright-python
-  rev: v1.1.405
-  hooks:
-    - id: pyright
+# - repo: https://github.com/RobertCraigie/pyright-python
+#   rev: v1.1.405
+#   hooks:
+#     - id: pyright

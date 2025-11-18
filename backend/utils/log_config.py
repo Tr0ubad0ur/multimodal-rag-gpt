@@ -2,6 +2,8 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from utils.config_handler import Config
+
 
 def setup_logging() -> logging.Logger:
     """Sets up rotating root logger to log everything into ./logs/app.log file.
@@ -10,9 +12,9 @@ def setup_logging() -> logging.Logger:
         logging.Logger: Root logger
     """
     project_root = Path(__file__).parent.parent.parent
-    log_dir = project_root / 'logs'
+    log_dir = project_root / Config.log_dir
     log_dir.mkdir(exist_ok=True)
-    log_file = log_dir / 'app.log'
+    log_file = log_dir / Config.log_file
 
     root_logger = logging.getLogger()
     for handler in root_logger.handlers[:]:
@@ -25,8 +27,8 @@ def setup_logging() -> logging.Logger:
 
     file_handler = RotatingFileHandler(
         log_file,
-        maxBytes=1048576,  # 1024 * 1024 bytes = 1 Mb
-        backupCount=1,
+        maxBytes=Config.max_bytes,
+        backupCount=Config.backup_count,
         encoding='utf-8',
     )
     file_handler.setFormatter(formatter)
