@@ -3,7 +3,7 @@ qdrant:
   image_collection: "images"
   text_vector_size: 384
   image_vector_size: 512
-  score_threshold: 0.8
+  score_threshold: 0
 
 data:
   data_folder: "data/test_data"

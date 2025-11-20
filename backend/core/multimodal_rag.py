@@ -40,12 +40,14 @@ class LocalRAG:
 
         docs = []
         for r in results:
+            payload = r.get('payload', {})
             docs.append(
                 {
-                    'text': r['payload'].get('text', ''),
-                    'source': r['payload'].get('source', ''),
+                    'text': payload.get('text', ''),
+                    'source': payload.get('source', ''),
                 }
             )
+
         return docs
 
     def generate_answer(
