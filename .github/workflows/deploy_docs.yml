@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "multimodal-rag-gpt/docs/**"
   workflow_dispatch:
 permissions:
   contents: write

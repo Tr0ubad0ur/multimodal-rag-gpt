@@ -1,0 +1,84 @@
+name: Code Quality
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  base_quality:
+    runs-on: ubuntu-latest
+    env:
+      UV_CACHE_DIR: .uv-cache
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13'
+
+      - name: Cache pip
+        uses: actions/cache@v3
+        with:
+          path: |
+            ${{ env.UV_CACHE_DIR }}
+            ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y git
+
+      - name: Install Python packages
+        run: |
+          pip install uv
+          uv sync --locked
+
+  code_quality:
+    needs: base_quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.13'
+
+      - name: Install Python packages
+        run: |
+          pip install uv
+          uv sync --locked
+
+      - name: ruff check
+        run: |
+          uv run ruff check --output-format=json > code-quality-report.json
+
+      - name: upload quality report
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-quality-report
+          path: code-quality-report.json
+
+      - name: ruff format
+        run: |
+          uv run ruff format --diff
+
+      - name: pre-commit
+        run: |
+          uv run pre-commit install
+          uv run pre-commit run uv-lock --all-files
+          uv run pre-commit run check-added-large-files --all-files
+          uv run pre-commit run check-case-conflict --all-files
+          uv run pre-commit run check-toml --all-files
+          uv run pre-commit run check-yaml --all-files
+          uv run pre-commit run detect-private-key --all-files
+          uv run pre-commit run end-of-file-fixer --all-files
+          uv run pre-commit run trailing-whitespace --all-files
