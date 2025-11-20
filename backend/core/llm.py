@@ -5,7 +5,8 @@ import requests
 import torch
 from PIL import Image
 from transformers import AutoModelForVision2Seq, AutoProcessor
-from utils.config_handler import Config
+
+from backend.utils.config_handler import Config
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,6 @@ class QwenVisionLLM:
         Returns:
             str: The generated text output from the model.
         """
-        # Добавляем контекст retrieved_docs
         full_prompt = prompt
         if context:
             context_text = '\n'.join([d['text'] for d in context])
@@ -96,7 +96,6 @@ class QwenVisionLLM:
         return result
 
 
-# Singleton
 qwen_llm = QwenVisionLLM()
 
 

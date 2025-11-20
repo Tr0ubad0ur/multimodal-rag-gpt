@@ -17,7 +17,7 @@
 
 ```bash
 # Клонирование репозитория с использованием SSH ключа
-git clone https://github.com/Tr0ubad0ur/multimodal-rag-gpt.git
+git clone git@github.com:Tr0ubad0ur/multimodal-rag-gpt.git
 
 # Открытие проекта в VSCode
 code multimodal-rag-gpt

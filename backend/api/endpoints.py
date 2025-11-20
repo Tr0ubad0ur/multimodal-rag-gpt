@@ -20,24 +20,10 @@ class QueryRequest(BaseModel):
 
     query: str
     top_k: int = 5
-    image: Optional[str] = None  # путь или URL
+    image: Optional[str] = None
 
 
-@router.post('/ask_text')
-def ask_text(request: QueryRequest) -> dict:
-    """Handle a text-only query request and generate an answer using RAG.
-
-    Args:
-        request (QueryRequest): The query request containing the text and retrieval parameters.
-
-    Returns:
-        dict: The generated answer from the RAG pipeline.
-    """
-    result = rag.generate_answer(request.query, top_k=request.top_k)
-    return result
-
-
-@router.post('/ask_mixed')
+@router.post('/ask')
 def ask_mixed(request: QueryRequest) -> dict:
     """Handle a multimodal query request (text + optional image) and generate an answer using RAG.
 
@@ -51,3 +37,8 @@ def ask_mixed(request: QueryRequest) -> dict:
         request.query, top_k=request.top_k, image=request.image
     )
     return result
+
+
+# TODO write this requests
+# @router.post('/test_llm')
+# @router.post('/test_qdrant')

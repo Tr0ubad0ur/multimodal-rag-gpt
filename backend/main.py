@@ -2,9 +2,9 @@ import logging
 from typing import Dict
 
 from fastapi import FastAPI
-from utils.log_config import setup_logging
 
 from backend.api.endpoints import router
+from backend.utils.log_config import setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)

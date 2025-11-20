@@ -1,12 +1,9 @@
 from typing import Any, Dict, List
 
-from qdrant_client import QdrantClient
-from utils.config_handler import Config
-
 from backend.core.embeddings import text_embedding
 from backend.core.llm import get_llm_response
-
-COLLECTION_NAME = Config.qdrant_text_collection
+from backend.utils.config_handler import Config
+from backend.utils.qdrant_handler import QdrantHandler
 
 
 class LocalRAG:
@@ -18,9 +15,15 @@ class LocalRAG:
 
     def __init__(self) -> None:
         """Initialize the LocalRAG pipeline by connecting to the Qdrant instance."""
-        self.client = QdrantClient(host='localhost', port=6333)
+        self.client = QdrantHandler(
+            url='localhost:6333',
+            collection_name=Config.qdrant_text_collection,
+            vector_size=Config.text_vector_size,
+        )
 
-    def retrieve(self, query: str, top_k: int = 5) -> List[Dict[str, str]]:
+    def retrieve_data(
+        self, query: str, top_k: int = 5
+    ) -> List[Dict[str, str]]:
         """Retrieve top-K most similar documents from Qdrant for a given query.
 
         Args:
@@ -33,17 +36,14 @@ class LocalRAG:
                 - 'source' (str): Source file path or metadata for the chunk.
         """
         query_vector = text_embedding(query)
-        results = self.client.search(
-            collection_name=COLLECTION_NAME,
-            query_vector=query_vector,
-            limit=top_k,
-        )
+        results = self.client.search(query_vector=query_vector)
+
         docs = []
         for r in results:
             docs.append(
                 {
-                    'text': r.payload.get('text', ''),
-                    'source': r.payload.get('source', ''),
+                    'text': r['payload'].get('text', ''),
+                    'source': r['payload'].get('source', ''),
                 }
             )
         return docs
@@ -63,6 +63,6 @@ class LocalRAG:
                 - 'answer' (str): The generated text answer from the LLM.
                 - 'retrieved_docs' (List[Dict[str, str]]): The list of retrieved documents used as context.
         """
-        docs = self.retrieve(query, top_k)
+        docs = self.retrieve_data(query, top_k)
         answer_text = get_llm_response(query, context=docs, image=image)
         return {'answer': answer_text, 'retrieved_docs': docs}
