@@ -20,9 +20,7 @@ def text_embedding(text: str) -> list[float]:
         - This embedding can be stored in a vector database like Qdrant.
         - Ensure the model used for text embeddings is compatible with your retrieval pipeline.
     """
-    vector = model.encode(
-        text
-    ).tolist()  # преобразуем в список float для Qdrant
+    vector = model.encode(text).tolist()
     return vector
 
 

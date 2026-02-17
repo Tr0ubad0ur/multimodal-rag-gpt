@@ -1,7 +1,7 @@
 from typing import Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from backend.core.multimodal_rag import LocalRAG
 
@@ -18,9 +18,18 @@ class QueryRequest(BaseModel):
         image (Optional[str], optional): Optional path or URL to an image to include in the query. Defaults to None.
     """
 
-    query: str
-    top_k: int = 5
+    query: str = Field(min_length=1, max_length=4000)
+    top_k: int = Field(default=5, ge=1, le=50)
     image: Optional[str] = None
+
+    @field_validator('query')
+    @classmethod
+    def validate_query(cls, value: str) -> str:
+        """validate_query."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError('query must not be empty')
+        return stripped
 
 
 @router.post('/ask')

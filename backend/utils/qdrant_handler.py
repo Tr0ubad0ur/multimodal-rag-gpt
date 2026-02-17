@@ -1,4 +1,5 @@
 import logging
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -84,26 +85,21 @@ class QdrantHandler:
             points=[PointStruct(**p) for p in points],
         )
 
-    def search(self, query_vector: List[float]) -> List[Dict[str, Any]]:
-        """Поиск ближайших точек по вектору с дополнительной фильтрацией и параметрами.
+    def search(
+        self, query_vector: List[float], top_k: int = 5
+    ) -> List[Dict[str, Any]]:
+        """Search nearest points by query vector.
 
-        Args:
-            query_vector (List[float]): Вектор запроса.
-            top_k (int): Количество возвращаемых результатов.
-            query_filter (Optional[Filter]): Фильтр по payload полям.
-            search_params (Optional[SearchParams]): Параметры поиска (например, hnsw_ef).
-            with_payload (bool): Нужно ли включать payload в результаты.
-            score_threshold (Optional[float]): Порог схожести — отфильтровать точки с низким скором.
-
-        Returns:
-            List[Dict[str, Any]]: Список найденных точек с id, score и (опционально) payload.
+        Note:
+            This method only performs retrieval and does not trigger indexing.
+            Data ingestion should be done explicitly via ``enrich_with_data``.
         """
         self.create_collection()
-        self.enrich_with_data()
 
         hits = self.client.query_points(
             collection_name=self.collection_name,
             query=query_vector,
+            limit=top_k,
             with_payload=True,
             score_threshold=Config.score_threshold,
         ).points
@@ -124,7 +120,6 @@ class QdrantHandler:
     ) -> None:
         """Load all documents or images from folder into Qdrant."""
         all_files = list(folder.glob('*'))
-        point_id = 0
 
         for file_path in all_files:
             if (
@@ -134,13 +129,18 @@ class QdrantHandler:
             ):
                 loader = DataLoader()
                 chunks = loader.process_file(file_path)
-                for chunk in chunks:
+                for chunk_idx, chunk in enumerate(chunks):
                     vector = text_embedding(chunk)
                     self.client.upsert(
                         collection_name=collection_name,
                         points=[
                             {
-                                'id': point_id,
+                                'id': str(
+                                    uuid.uuid5(
+                                        uuid.NAMESPACE_URL,
+                                        f'{file_path}:{chunk_idx}',
+                                    )
+                                ),
                                 'vector': vector,
                                 'payload': {
                                     'text': chunk,
@@ -149,7 +149,6 @@ class QdrantHandler:
                             }
                         ],
                     )
-                    point_id += 1
                 if chunks:
                     logger.info(
                         f'✅ Uploaded {len(chunks)} text chunks from {file_path.name}'
@@ -166,11 +165,15 @@ class QdrantHandler:
                     collection_name=collection_name,
                     points=[
                         {
-                            'id': point_id,
+                            'id': str(
+                                uuid.uuid5(
+                                    uuid.NAMESPACE_URL,
+                                    f'{file_path}:image',
+                                )
+                            ),
                             'vector': vector,
                             'payload': {'source': str(file_path)},
                         }
                     ],
                 )
                 logger.info(f'✅ Uploaded image {file_path.name}')
-                point_id += 1

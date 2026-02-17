@@ -60,7 +60,11 @@ uv sync
 ## 3. Запусти векторную базу Qdrant
 
 ```bash
+# Запуск ручки swagger на FastAPI
 docker run -p 6333:6333 qdrant/qdrant
+
+# Запуск ручки swagger на FastAPI
+uvicorn backend.main:app --reload
 ```
 
 ## 4. Структура проекта

@@ -17,6 +17,13 @@ class DataLoader:
         overlap: int = Config.chunk_overlap,
     ) -> List[str]:
         """Split text into overlapping chunks."""
+        if size <= 0:
+            raise ValueError('chunk_size must be greater than 0')
+        if overlap < 0:
+            raise ValueError('chunk_overlap must be non-negative')
+        if overlap >= size:
+            raise ValueError('chunk_overlap must be smaller than chunk_size')
+
         chunks = []
         start = 0
         while start < len(text):

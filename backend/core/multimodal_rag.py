@@ -36,7 +36,7 @@ class LocalRAG:
                 - 'source' (str): Source file path or metadata for the chunk.
         """
         query_vector = text_embedding(query)
-        results = self.client.search(query_vector=query_vector)
+        results = self.client.search(query_vector=query_vector, top_k=top_k)
 
         docs = []
         for r in results:

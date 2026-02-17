@@ -23,7 +23,7 @@ class QwenVisionLLM:
 
     def __init__(self) -> None:
         """Initialize the Vision LLM, loading the model and processor."""
-        logger.info('🔄 Loading {Config.llm_model_name}...')
+        logger.info(f'Loading {Config.llm_model_name}...')
         self.processor = AutoProcessor.from_pretrained(MODEL_NAME)
         self.model = AutoModelForVision2Seq.from_pretrained(
             MODEL_NAME,
@@ -32,7 +32,7 @@ class QwenVisionLLM:
             else torch.float32,
             device_map='auto',
         )
-        logger.info('✅ {Config.llm_model_name} loaded successfully!')
+        logger.info(f'{Config.llm_model_name} loaded successfully')
 
     def build_messages(self, prompt, image=None) -> List[Dict[str, Any]]:
         """Constructs a chat-style message payload for the model.
@@ -48,9 +48,9 @@ class QwenVisionLLM:
         if image is not None:
             if isinstance(image, str):
                 if image.startswith('http'):
-                    img = Image.open(
-                        requests.get(image, stream=True).raw
-                    ).convert('RGB')
+                    response = requests.get(image, stream=True, timeout=10)
+                    response.raise_for_status()
+                    img = Image.open(response.raw).convert('RGB')
                 else:
                     img = Image.open(image).convert('RGB')
             else:
@@ -86,12 +86,16 @@ class QwenVisionLLM:
             return_tensors='pt',
         ).to(self.model.device)
 
-        output = self.model.generate(
-            **inputs, max_new_tokens=Config.llm_max_new_tokens, do_sample=False
-        )
+        with torch.inference_mode():
+            output = self.model.generate(
+                **inputs,
+                max_new_tokens=Config.llm_max_new_tokens,
+                do_sample=False,
+            )
 
         result = self.processor.decode(
-            output[0][inputs['input_ids'].shape[-1] :]
+            output[0][inputs['input_ids'].shape[-1] :],
+            skip_special_tokens=True,
         )
         return result
 
