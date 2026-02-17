@@ -60,12 +60,37 @@ uv sync
 ## 3. Запусти векторную базу Qdrant
 
 ```bash
-# Запуск ручки swagger на FastAPI
+# Быстрый запуск
 docker run -p 6333:6333 qdrant/qdrant
+
+# Рекомендуемый запуск с сохранением данных (один раз загрузи тестовые данные)
+docker compose -f docker-compose.qdrant.yml up -d
+python scripts/ingest_qdrant.py
 
 # Запуск ручки swagger на FastAPI
 uvicorn backend.main:app --reload
 ```
+
+> [!note]
+> Qdrant хранит данные в volume `qdrant_storage`. После первой загрузки
+> `python scripts/ingest_qdrant.py` повторять не нужно — данные сохраняются.
+
+## 3.1 Локальный Supabase (Auth + Postgres)
+
+Локальный запуск Supabase удобен для авторизации и разделения данных пользователей.
+
+```bash
+# Установка Supabase CLI (если нет)
+brew install supabase/tap/supabase
+
+# Инициализация и старт локального Supabase
+supabase init
+supabase start
+```
+
+После старта Supabase CLI покажет:
+`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`.
+Их можно положить в `.env` и использовать в backend.
 
 ## 4. Структура проекта
 
