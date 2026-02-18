@@ -1,8 +1,12 @@
+import os
 from pathlib import Path
 
 import yaml
+from dotenv import load_dotenv
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / 'backend_config.yaml'
+
+load_dotenv()
 
 with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
     _config = yaml.safe_load(f)
@@ -31,6 +35,12 @@ class Config:
     log_file: str = _config['logging']['log_file']
     max_bytes: int = _config['logging']['max_bytes']
     backup_count: int = _config['logging']['backup_count']
+
+    supabase_url: str | None = os.getenv('SUPABASE_URL')
+    supabase_anon_key: str | None = os.getenv('SUPABASE_ANON_KEY')
+    supabase_service_role_key: str | None = os.getenv(
+        'SUPABASE_SERVICE_ROLE_KEY'
+    )
 
 
 settings = Config()

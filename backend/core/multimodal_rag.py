@@ -22,13 +22,14 @@ class LocalRAG:
         )
 
     def retrieve_data(
-        self, query: str, top_k: int = 5
+        self, query: str, top_k: int = 5, user_id: str | None = None
     ) -> List[Dict[str, str]]:
         """Retrieve top-K most similar documents from Qdrant for a given query.
 
         Args:
             query (str): User text query.
             top_k (int, optional): Number of top documents to retrieve. Defaults to 5.
+            user_id (str | None, optional): Filter results by user id. Defaults to None.
 
         Returns:
             List[Dict[str, str]]: A list of dictionaries containing the retrieved documents:
@@ -36,7 +37,9 @@ class LocalRAG:
                 - 'source' (str): Source file path or metadata for the chunk.
         """
         query_vector = text_embedding(query)
-        results = self.client.search(query_vector=query_vector, top_k=top_k)
+        results = self.client.search(
+            query_vector=query_vector, top_k=top_k, user_id=user_id
+        )
 
         docs = []
         for r in results:
@@ -51,7 +54,11 @@ class LocalRAG:
         return docs
 
     def generate_answer(
-        self, query: str, top_k: int = 5, image=None
+        self,
+        query: str,
+        top_k: int = 5,
+        image=None,
+        user_id: str | None = None,
     ) -> Dict[str, Any]:
         """Generate an answer using the local LLM based on the query and optionally an image.
 
@@ -59,12 +66,13 @@ class LocalRAG:
             query (str): User question or prompt.
             top_k (int, optional): Number of top documents to retrieve for context. Defaults to 5.
             image (Optional[str], optional): Optional image path or URL to include in the prompt. Defaults to None.
+            user_id (str | None, optional): Filter context by user id. Defaults to None.
 
         Returns:
             Dict[str, object]: A dictionary with:
                 - 'answer' (str): The generated text answer from the LLM.
                 - 'retrieved_docs' (List[Dict[str, str]]): The list of retrieved documents used as context.
         """
-        docs = self.retrieve_data(query, top_k)
+        docs = self.retrieve_data(query, top_k, user_id=user_id)
         answer_text = get_llm_response(query, context=docs, image=image)
         return {'answer': answer_text, 'retrieved_docs': docs}

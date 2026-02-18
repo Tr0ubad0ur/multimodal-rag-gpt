@@ -4,7 +4,14 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
 
 from backend.core.embeddings import image_embedding_from_path, text_embedding
 from backend.utils.config_handler import Config
@@ -45,13 +52,17 @@ class QdrantHandler:
             logger.info(f'Коллекция {self.collection_name} успешно создана')
 
     def enrich_with_data(
-        self, folder: str = Config.data_folder, embed_type: str = 'text'
+        self,
+        folder: str = Config.data_folder,
+        embed_type: str = 'text',
+        user_id: str | None = None,
     ) -> None:
         """Load all data from a folder into the current Qdrant collection.
 
         Args:
             folder (str): Path to the folder with documents/images.
             embed_type (str): 'text' or 'image'.
+            user_id (str | None, optional): Store user id in payload. Defaults to None.
         """
         self.create_collection()
 
@@ -69,6 +80,7 @@ class QdrantHandler:
             folder=folder_path,
             collection_name=self.collection_name,
             embed_type=embed_type,
+            user_id=user_id,
         )
         logger.info(
             f'✅ Data enrichment completed for collection {self.collection_name}.'
@@ -86,7 +98,10 @@ class QdrantHandler:
         )
 
     def search(
-        self, query_vector: List[float], top_k: int = 5
+        self,
+        query_vector: List[float],
+        top_k: int = 5,
+        user_id: str | None = None,
     ) -> List[Dict[str, Any]]:
         """Search nearest points by query vector.
 
@@ -96,12 +111,23 @@ class QdrantHandler:
         """
         self.create_collection()
 
+        query_filter = None
+        if user_id:
+            query_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key='user_id', match=MatchValue(value=user_id)
+                    )
+                ]
+            )
+
         hits = self.client.query_points(
             collection_name=self.collection_name,
             query=query_vector,
             limit=top_k,
             with_payload=True,
             score_threshold=Config.score_threshold,
+            query_filter=query_filter,
         ).points
 
         results = []
@@ -117,6 +143,7 @@ class QdrantHandler:
         folder: Path,
         collection_name: str,
         embed_type: str = 'text',  # "text" or "image"
+        user_id: str | None = None,
     ) -> None:
         """Load all documents or images from folder into Qdrant."""
         all_files = list(folder.glob('*'))
@@ -145,6 +172,9 @@ class QdrantHandler:
                                 'payload': {
                                     'text': chunk,
                                     'source': str(file_path),
+                                    **(
+                                        {'user_id': user_id} if user_id else {}
+                                    ),
                                 },
                             }
                         ],
@@ -172,7 +202,10 @@ class QdrantHandler:
                                 )
                             ),
                             'vector': vector,
-                            'payload': {'source': str(file_path)},
+                            'payload': {
+                                'source': str(file_path),
+                                **({'user_id': user_id} if user_id else {}),
+                            },
                         }
                     ],
                 )

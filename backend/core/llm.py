@@ -114,4 +114,36 @@ def get_llm_response(prompt, context=None, image=None) -> str:
     Returns:
         str: Generated text from the LLM.
     """
-    return qwen_llm.generate(prompt, context=context, image=image)
+    if context:
+        by_source: Dict[str, List[str]] = {}
+        for item in context:
+            source = item.get('source') or 'unknown'
+            by_source.setdefault(source, []).append(item.get('text', ''))
+
+        summaries: List[str] = []
+        for source, texts in by_source.items():
+            source_text = '\n'.join(texts).strip()
+            source_prompt = (
+                'Сформулируй ОДНО короткое предложение, о чем этот источник. '
+                'Используй только информацию из текста. '
+                'Не повторяй слова "Источник", "Текст", "Запрос", не цитируй текст. '
+                'Не добавляй лишние заголовки.\n\n'
+                f'Текст:\n{source_text}\n\n'
+                f'Запрос пользователя: {prompt}'
+            )
+            raw_summary = qwen_llm.generate(
+                source_prompt, context=None, image=image
+            )
+            # Sanitize common prompt-echo artifacts
+            summary = (
+                raw_summary.replace('Источник:', '')
+                .replace('Текст:', '')
+                .replace('Запрос пользователя:', '')
+                .replace('Summary:', '')
+                .strip()
+            )
+            summaries.append(f'- {source}: {summary}')
+
+        return '\n'.join(summaries)
+
+    return qwen_llm.generate(prompt, context=None, image=image)

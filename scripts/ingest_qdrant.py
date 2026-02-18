@@ -15,6 +15,7 @@ def main() -> None:
     url = os.getenv('QDRANT_URL', 'localhost:6333')
     data_folder = os.getenv('DATA_FOLDER', Config.data_folder)
     embed_type = os.getenv('EMBED_TYPE', 'text')
+    user_id = os.getenv('USER_ID')
 
     if embed_type == 'image':
         collection_name = Config.qdrant_image_collection
@@ -28,7 +29,9 @@ def main() -> None:
         collection_name=collection_name,
         vector_size=vector_size,
     )
-    qdrant.enrich_with_data(folder=data_folder, embed_type=embed_type)
+    qdrant.enrich_with_data(
+        folder=data_folder, embed_type=embed_type, user_id=user_id
+    )
 
 
 if __name__ == '__main__':

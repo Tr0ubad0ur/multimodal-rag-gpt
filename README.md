@@ -92,6 +92,65 @@ supabase start
 `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`.
 Их можно положить в `.env` и использовать в backend.
 
+```bash
+# Применить миграции (создаст таблицу query_history)
+supabase db reset
+```
+
+## 3.2 Auth API (Supabase)
+
+```bash
+# Signup
+curl -X POST "http://localhost:8000/auth/signup" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"secret123"}'
+
+# Signin
+curl -X POST "http://localhost:8000/auth/signin" \
+  -H "Content-Type: application/json" \
+  -d '{"email":"user@example.com","password":"secret123"}'
+
+# Refresh token
+curl -X POST "http://localhost:8000/auth/refresh" \
+  -H "Content-Type: application/json" \
+  -d '{"refresh_token":"<REFRESH_TOKEN>"}'
+
+# Logout (нужен access token)
+curl -X POST "http://localhost:8000/auth/logout" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"scope":"global"}'
+```
+
+Из ответа `signin` возьми `access_token` и используй для авторизованных запросов:
+
+```bash
+# Запрос с авторизацией
+curl -X POST "http://localhost:8000/ask_auth" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -d '{"query":"О чем документ?","top_k":3}'
+
+# История запросов пользователя
+curl -X GET "http://localhost:8000/history" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+
+# Удалить запись истории по id
+curl -X DELETE "http://localhost:8000/history/<ID>" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+```
+
+## 3.3 Разделение данных Qdrant по пользователям
+
+Если нужно хранить разные данные для разных пользователей, добавляй `user_id`
+в payload при индексации. Для тестовых данных можно задать переменную окружения:
+
+```bash
+USER_ID="<SUPABASE_USER_ID>" python scripts/ingest_qdrant.py
+```
+
+В запросах `POST /ask_auth` поиск идет с фильтром по `user_id`.
+
 ## 4. Структура проекта
 
 ```bash

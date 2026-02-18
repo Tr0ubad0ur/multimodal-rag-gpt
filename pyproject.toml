@@ -17,6 +17,7 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "python-multipart>=0.0.20",
     "qdrant-client>=1.15.1",
+    "supabase>=2.0.0",
     "sentence-transformers>=5.1.2",
     "torch>=2.9.1",
     "torchvision>=0.24.1",
