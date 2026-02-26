@@ -66,6 +66,10 @@ docker run -p 6333:6333 qdrant/qdrant
 # Рекомендуемый запуск с сохранением данных (один раз загрузи тестовые данные)
 docker compose -f docker-compose.qdrant.yml up -d
 python scripts/ingest_qdrant.py
+# Для изображений
+EMBED_TYPE=image python scripts/ingest_qdrant.py
+# Для видео
+EMBED_TYPE=video python scripts/ingest_qdrant.py
 
 # Запуск ручки swagger на FastAPI
 uvicorn backend.main:app --reload
@@ -150,6 +154,81 @@ USER_ID="<SUPABASE_USER_ID>" python scripts/ingest_qdrant.py
 ```
 
 В запросах `POST /ask_auth` поиск идет с фильтром по `user_id`.
+
+## 3.4 Embeddings и метрики
+
+```bash
+# text embeddings
+curl -X POST "http://localhost:8000/embed/text" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Пример текста"}'
+
+# image embeddings (локальный путь к файлу)
+curl -X POST "http://localhost:8000/embed/image" \
+  -H "Content-Type: application/json" \
+  -d '{"image_path":"data/test_data/sample.jpg"}'
+
+# video embeddings (локальный путь к файлу)
+curl -X POST "http://localhost:8000/embed/video" \
+  -H "Content-Type: application/json" \
+  -d '{"video_path":"data/test_data/sample.mp4","sample_fps":1.0}'
+
+# Prometheus scrape endpoint
+curl "http://localhost:8000/metrics"
+```
+
+## 3.5 Prometheus + Grafana
+
+```bash
+# backend должен быть запущен локально на :8000
+docker compose -f docker-compose.monitoring.yml up -d
+
+# UI
+# Prometheus: http://localhost:9090
+# Grafana: http://localhost:3000 (admin/admin)
+```
+
+В Grafana автоматически подключается datasource Prometheus и дашборд
+`Multimodal RAG Overview`.
+
+## 3.6 Выбор embedding-модели
+
+Провайдеры и модели задаются в [backend/backend_config.yaml](backend/backend_config.yaml):
+
+```yaml
+embeddings:
+  default_provider: "sentence-transformers-default"
+  providers:
+    sentence-transformers-default:
+      type: "sentence-transformers"
+      text_model_name: "all-MiniLM-L6-v2"
+      image_model_name: "clip-ViT-B-32"
+    sentence-transformers-multilingual:
+      type: "sentence-transformers"
+      text_model_name: "paraphrase-multilingual-MiniLM-L12-v2"
+      image_model_name: "clip-ViT-B-32"
+```
+
+Также можно выбрать провайдер на запросе:
+
+```bash
+curl -X POST "http://localhost:8000/embed/text" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Пример","provider":"sentence-transformers-multilingual"}'
+```
+
+## 3.7 Автотесты
+
+```bash
+# unit + integration
+pytest -q
+
+# только unit
+pytest -q tests/unit
+
+# только integration
+pytest -q tests/integration
+```
 
 ## 4. Структура проекта
 

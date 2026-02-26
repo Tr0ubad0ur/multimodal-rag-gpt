@@ -20,6 +20,9 @@ def main() -> None:
     if embed_type == 'image':
         collection_name = Config.qdrant_image_collection
         vector_size = Config.image_vector_size
+    elif embed_type == 'video':
+        collection_name = Config.qdrant_video_collection
+        vector_size = Config.video_vector_size
     else:
         collection_name = Config.qdrant_text_collection
         vector_size = Config.text_vector_size

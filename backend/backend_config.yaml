@@ -1,8 +1,10 @@
 qdrant:
   text_collection: "documents"
   image_collection: "images"
+  video_collection: "videos"
   text_vector_size: 384
   image_vector_size: 512
+  video_vector_size: 512
   score_threshold: 0
 
 data:
@@ -12,10 +14,24 @@ data:
   supported_text_extensions: [".txt", ".md"]
   supported_pdf_extensions: [".pdf"]
   supported_image_extensions: [".jpg", ".jpeg", ".png"]
+  supported_video_extensions: [".mp4", ".mov", ".avi", ".mkv"]
 
 llm:
   model_name: "Qwen/Qwen2-VL-2B-Instruct"
   max_new_tokens: 300
+
+embeddings:
+  default_provider: "sentence-transformers-default"
+  video_sample_fps: 1.0
+  providers:
+    sentence-transformers-default:
+      type: "sentence-transformers"
+      text_model_name: "all-MiniLM-L6-v2"
+      image_model_name: "clip-ViT-B-32"
+    sentence-transformers-multilingual:
+      type: "sentence-transformers"
+      text_model_name: "paraphrase-multilingual-MiniLM-L12-v2"
+      image_model_name: "clip-ViT-B-32"
 
 logging:
   log_dir: "logs"

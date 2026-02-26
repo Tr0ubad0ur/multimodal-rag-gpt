@@ -1,7 +1,8 @@
+import time
 from typing import Any, Dict, List
 
 from backend.core.embeddings import text_embedding
-from backend.core.llm import get_llm_response
+from backend.monitoring.metrics import observe_rag_query
 from backend.utils.config_handler import Config
 from backend.utils.qdrant_handler import QdrantHandler
 
@@ -73,6 +74,24 @@ class LocalRAG:
                 - 'answer' (str): The generated text answer from the LLM.
                 - 'retrieved_docs' (List[Dict[str, str]]): The list of retrieved documents used as context.
         """
-        docs = self.retrieve_data(query, top_k, user_id=user_id)
-        answer_text = get_llm_response(query, context=docs, image=image)
-        return {'answer': answer_text, 'retrieved_docs': docs}
+        query_type = 'multimodal' if image else 'text'
+        started = time.perf_counter()
+        status = 'ok'
+        docs: List[Dict[str, str]] = []
+
+        try:
+            from backend.core.llm import get_llm_response
+
+            docs = self.retrieve_data(query, top_k, user_id=user_id)
+            answer_text = get_llm_response(query, context=docs, image=image)
+            return {'answer': answer_text, 'retrieved_docs': docs}
+        except Exception:
+            status = 'error'
+            raise
+        finally:
+            observe_rag_query(
+                query_type=query_type,
+                status=status,
+                duration_seconds=time.perf_counter() - started,
+                retrieved_docs_count=len(docs),
+            )

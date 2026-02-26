@@ -1,9 +1,16 @@
+from pathlib import Path
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 
+from backend.core.embeddings import (
+    image_embedding_from_path,
+    text_embedding,
+    video_embedding_from_path,
+)
 from backend.core.multimodal_rag import LocalRAG
+from backend.utils.config_handler import Config
 from backend.utils.supabase_client import get_supabase_client
 
 router = APIRouter()
@@ -31,6 +38,63 @@ class QueryRequest(BaseModel):
         if not stripped:
             raise ValueError('query must not be empty')
         return stripped
+
+
+class TextEmbeddingRequest(BaseModel):
+    """Schema for text embedding endpoint."""
+
+    text: str = Field(min_length=1, max_length=4000)
+    provider: str = Field(
+        default=Config.default_embedding_provider, min_length=1
+    )
+
+    @field_validator('text')
+    @classmethod
+    def validate_text(cls, value: str) -> str:
+        """Ensure non-empty text after stripping."""
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError('text must not be empty')
+        return stripped
+
+
+class ImageEmbeddingRequest(BaseModel):
+    """Schema for image embedding endpoint."""
+
+    image_path: str = Field(min_length=1, max_length=2048)
+    provider: str = Field(
+        default=Config.default_embedding_provider, min_length=1
+    )
+
+    @field_validator('image_path')
+    @classmethod
+    def validate_image_path(cls, value: str) -> str:
+        """Ensure image path exists and points to a file."""
+        image_path = Path(value)
+        if not image_path.exists() or not image_path.is_file():
+            raise ValueError('image_path must point to an existing file')
+        return str(image_path)
+
+
+class VideoEmbeddingRequest(BaseModel):
+    """Schema for video embedding endpoint."""
+
+    video_path: str = Field(min_length=1, max_length=2048)
+    sample_fps: float = Field(
+        default=Config.embedding_video_sample_fps, gt=0, le=10
+    )
+    provider: str = Field(
+        default=Config.default_embedding_provider, min_length=1
+    )
+
+    @field_validator('video_path')
+    @classmethod
+    def validate_video_path(cls, value: str) -> str:
+        """Ensure video path exists and points to a file."""
+        video_path = Path(value)
+        if not video_path.exists() or not video_path.is_file():
+            raise ValueError('video_path must point to an existing file')
+        return str(video_path)
 
 
 class AuthRequest(BaseModel):
@@ -158,6 +222,50 @@ def ask_mixed(request: QueryRequest) -> dict:
         request.query, top_k=request.top_k, image=request.image
     )
     return result
+
+
+@router.post('/embed/text')
+def embed_text(request: TextEmbeddingRequest) -> dict:
+    """Generate embedding for a text payload."""
+    vector = text_embedding(request.text, provider_name=request.provider)
+    return {
+        'provider': request.provider,
+        'modality': 'text',
+        'dimension': len(vector),
+        'embedding': vector,
+    }
+
+
+@router.post('/embed/image')
+def embed_image(request: ImageEmbeddingRequest) -> dict:
+    """Generate embedding for a local image file."""
+    vector = image_embedding_from_path(
+        request.image_path,
+        provider_name=request.provider,
+    )
+    return {
+        'provider': request.provider,
+        'modality': 'image',
+        'dimension': len(vector),
+        'embedding': vector,
+    }
+
+
+@router.post('/embed/video')
+def embed_video(request: VideoEmbeddingRequest) -> dict:
+    """Generate embedding for a local video file."""
+    vector = video_embedding_from_path(
+        request.video_path,
+        sample_fps=request.sample_fps,
+        provider_name=request.provider,
+    )
+    return {
+        'provider': request.provider,
+        'modality': 'video',
+        'dimension': len(vector),
+        'embedding': vector,
+        'sample_fps': request.sample_fps,
+    }
 
 
 @router.post('/ask_auth')

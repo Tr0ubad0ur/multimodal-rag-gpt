@@ -17,8 +17,10 @@ class Config:
 
     qdrant_text_collection: str = _config['qdrant']['text_collection']
     qdrant_image_collection: str = _config['qdrant']['image_collection']
+    qdrant_video_collection: str = _config['qdrant']['video_collection']
     text_vector_size: int = _config['qdrant']['text_vector_size']
     image_vector_size: int = _config['qdrant']['image_vector_size']
+    video_vector_size: int = _config['qdrant']['video_vector_size']
     score_threshold: float = _config['qdrant']['score_threshold']
 
     data_folder: str = _config['data']['data_folder']
@@ -27,9 +29,16 @@ class Config:
     text_extensions: list = _config['data']['supported_text_extensions']
     pdf_extensions: list = _config['data']['supported_pdf_extensions']
     image_extensions: list = _config['data']['supported_image_extensions']
+    video_extensions: list = _config['data']['supported_video_extensions']
 
     llm_model_name: str = _config['llm']['model_name']
     llm_max_new_tokens: int = _config['llm']['max_new_tokens']
+
+    default_embedding_provider: str = _config['embeddings']['default_provider']
+    embedding_video_sample_fps: float = _config['embeddings'][
+        'video_sample_fps'
+    ]
+    embedding_providers: dict = _config['embeddings']['providers']
 
     log_dir: str = _config['logging']['log_dir']
     log_file: str = _config['logging']['log_file']

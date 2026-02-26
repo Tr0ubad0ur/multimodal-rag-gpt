@@ -13,7 +13,11 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from backend.core.embeddings import image_embedding_from_path, text_embedding
+from backend.core.embeddings import (
+    image_embedding_from_path,
+    text_embedding,
+    video_embedding_from_path,
+)
 from backend.utils.config_handler import Config
 from backend.utils.load_data import DataLoader
 
@@ -210,3 +214,29 @@ class QdrantHandler:
                     ],
                 )
                 logger.info(f'✅ Uploaded image {file_path.name}')
+
+            elif (
+                embed_type == 'video'
+                and file_path.suffix.lower() in Config.video_extensions
+            ):
+                vector = video_embedding_from_path(str(file_path))
+                self.client.upsert(
+                    collection_name=collection_name,
+                    points=[
+                        {
+                            'id': str(
+                                uuid.uuid5(
+                                    uuid.NAMESPACE_URL,
+                                    f'{file_path}:video',
+                                )
+                            ),
+                            'vector': vector,
+                            'payload': {
+                                'source': str(file_path),
+                                'modality': 'video',
+                                **({'user_id': user_id} if user_id else {}),
+                            },
+                        }
+                    ],
+                )
+                logger.info(f'✅ Uploaded video {file_path.name}')
