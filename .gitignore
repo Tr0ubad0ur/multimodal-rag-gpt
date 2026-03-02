@@ -11,6 +11,8 @@
 !.vscode/extensions.json
 data
 .python-version
+.DS_Store
+**/.DS_Store
 
 # Logging
 logs
