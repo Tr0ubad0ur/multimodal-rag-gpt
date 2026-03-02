@@ -8,6 +8,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    MatchAny,
     MatchValue,
     PointStruct,
     VectorParams,
@@ -106,6 +107,8 @@ class QdrantHandler:
         query_vector: List[float],
         top_k: int = 5,
         user_id: str | None = None,
+        folder_scopes: list[str] | None = None,
+        file_ids: list[str] | None = None,
     ) -> List[Dict[str, Any]]:
         """Search nearest points by query vector.
 
@@ -115,15 +118,31 @@ class QdrantHandler:
         """
         self.create_collection()
 
-        query_filter = None
+        must_conditions: list[FieldCondition] = []
         if user_id:
-            query_filter = Filter(
-                must=[
-                    FieldCondition(
-                        key='user_id', match=MatchValue(value=user_id)
-                    )
-                ]
+            must_conditions.append(
+                FieldCondition(key='user_id', match=MatchValue(value=user_id))
             )
+        if folder_scopes:
+            must_conditions.append(
+                FieldCondition(
+                    key='folder_scope',
+                    match=MatchAny(
+                        any=[str(scope) for scope in folder_scopes]
+                    ),
+                )
+            )
+        if file_ids:
+            must_conditions.append(
+                FieldCondition(
+                    key='file_id',
+                    match=MatchAny(any=[str(file_id) for file_id in file_ids]),
+                )
+            )
+
+        query_filter = (
+            Filter(must=must_conditions) if must_conditions else None
+        )
 
         hits = self.client.query_points(
             collection_name=self.collection_name,

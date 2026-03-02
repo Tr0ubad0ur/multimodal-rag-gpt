@@ -18,6 +18,7 @@ class Config:
     qdrant_text_collection: str = _config['qdrant']['text_collection']
     qdrant_image_collection: str = _config['qdrant']['image_collection']
     qdrant_video_collection: str = _config['qdrant']['video_collection']
+    qdrant_url: str = os.getenv('QDRANT_URL', 'http://localhost:6333')
     text_vector_size: int = _config['qdrant']['text_vector_size']
     image_vector_size: int = _config['qdrant']['image_vector_size']
     video_vector_size: int = _config['qdrant']['video_vector_size']
@@ -33,6 +34,13 @@ class Config:
 
     llm_model_name: str = _config['llm']['model_name']
     llm_max_new_tokens: int = _config['llm']['max_new_tokens']
+    llm_available_models: list[str] = [
+        model.strip()
+        for model in os.getenv('LLM_AVAILABLE_MODELS', llm_model_name).split(
+            ','
+        )
+        if model.strip()
+    ]
 
     default_embedding_provider: str = _config['embeddings']['default_provider']
     embedding_video_sample_fps: float = _config['embeddings'][

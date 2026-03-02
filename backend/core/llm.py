@@ -103,17 +103,32 @@ class QwenVisionLLM:
 qwen_llm = QwenVisionLLM()
 
 
-def get_llm_response(prompt, context=None, image=None) -> str:
+def _resolve_llm_backend(model: str | None) -> QwenVisionLLM:
+    """Resolve an LLM backend by model name with fallback to default."""
+    if not model or model == Config.llm_model_name:
+        return qwen_llm
+    logger.warning(
+        'Unknown model "%s". Falling back to default model "%s".',
+        model,
+        Config.llm_model_name,
+    )
+    return qwen_llm
+
+
+def get_llm_response(prompt, context=None, image=None, model=None) -> str:
     """Helper function to generate a response using the global QwenVisionLLM instance.
 
     Args:
         prompt (str): User prompt or question.
         context (list[dict], optional): Retrieved documents for context.
         image (str or PIL.Image.Image, optional): Image to include in generation.
+        model (str | None, optional): Requested model identifier.
 
     Returns:
         str: Generated text from the LLM.
     """
+    backend = _resolve_llm_backend(model)
+
     if context:
         by_source: Dict[str, List[str]] = {}
         for item in context:
@@ -131,7 +146,7 @@ def get_llm_response(prompt, context=None, image=None) -> str:
                 f'Текст:\n{source_text}\n\n'
                 f'Запрос пользователя: {prompt}'
             )
-            raw_summary = qwen_llm.generate(
+            raw_summary = backend.generate(
                 source_prompt, context=None, image=image
             )
             # Sanitize common prompt-echo artifacts
@@ -146,4 +161,4 @@ def get_llm_response(prompt, context=None, image=None) -> str:
 
         return '\n'.join(summaries)
 
-    return qwen_llm.generate(prompt, context=None, image=image)
+    return backend.generate(prompt, context=None, image=image)
