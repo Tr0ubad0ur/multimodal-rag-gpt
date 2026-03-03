@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  base_quality:
+  code_quality:
     runs-on: ubuntu-latest
     env:
       UV_CACHE_DIR: .uv-cache
@@ -22,35 +22,15 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Cache pip
+      - name: Cache uv and pip
         uses: actions/cache@v3
         with:
           path: |
             ${{ env.UV_CACHE_DIR }}
             ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          key: ${{ runner.os }}-quality-${{ hashFiles('pyproject.toml', 'uv.lock') }}
           restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install system dependencies
-        run: sudo apt-get update && sudo apt-get install -y git
-
-      - name: Install Python packages
-        run: |
-          pip install uv
-          uv sync --locked
-
-  code_quality:
-    needs: base_quality
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.13'
+            ${{ runner.os }}-quality-
 
       - name: Install Python packages
         run: |
@@ -73,7 +53,6 @@ jobs:
 
       - name: pre-commit
         run: |
-          uv run pre-commit install
           uv run pre-commit run uv-lock --all-files
           uv run pre-commit run check-added-large-files --all-files
           uv run pre-commit run check-case-conflict --all-files
