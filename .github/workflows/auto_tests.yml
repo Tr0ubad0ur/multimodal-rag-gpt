@@ -1,0 +1,44 @@
+name: Auto Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    env:
+      UV_CACHE_DIR: .uv-cache
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.13"
+
+      - name: Cache uv and pip
+        uses: actions/cache@v3
+        with:
+          path: |
+            ${{ env.UV_CACHE_DIR }}
+            ~/.cache/pip
+          key: ${{ runner.os }}-tests-${{ hashFiles('pyproject.toml', 'uv.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-tests-
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          uv sync --locked
+
+      - name: Run tests
+        run: uv run pytest -q
