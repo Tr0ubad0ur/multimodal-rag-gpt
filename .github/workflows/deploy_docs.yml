@@ -5,7 +5,9 @@ on:
     branches:
       - main
     paths:
-      - "multimodal-rag-gpt/docs/**"
+      - "docs/**"
+      - "mkdocs.yml"
+      - ".github/workflows/deploy_docs.yml"
   workflow_dispatch:
 permissions:
   contents: write
