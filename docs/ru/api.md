@@ -1,51 +1,54 @@
-# Backend
+# Backend API
 
 ## main.py
 
-::: main.root
+::: backend.main.root
+::: backend.main.metrics
 
 ## api/endpoints.py
 
-::: api.endpoints.QueryRequest
-::: api.endpoints.ask_text
-::: api.endpoints.ask_mixed
-
-## core/create_collection.py
-
-::: core.create_collection.create_collection
+::: backend.api.endpoints.QueryRequest
+::: backend.api.endpoints.TextEmbeddingRequest
+::: backend.api.endpoints.ImageEmbeddingRequest
+::: backend.api.endpoints.VideoEmbeddingRequest
+::: backend.api.endpoints.ask_mixed
+::: backend.api.endpoints.ask_mixed_auth
+::: backend.api.endpoints.embed_text
+::: backend.api.endpoints.embed_image
+::: backend.api.endpoints.embed_video
+::: backend.api.endpoints.upload_file
+::: backend.api.endpoints.kb_tree
+::: backend.api.endpoints.get_history
 
 ## core/embeddings.py
 
-::: core.embeddings.text_embedding
-::: core.embeddings.image_embedding_from_path
+::: backend.core.embeddings.text_embedding
+::: backend.core.embeddings.image_embedding_from_path
+::: backend.core.embeddings.video_embedding_from_path
 
 ## core/llm.py
 
-::: core.llm.QwenVisionLLM
-::: core.llm.QwenVisionLLM.__init__
-::: core.llm.QwenVisionLLM.build_messages
-::: core.llm.QwenVisionLLM.generate
-::: core.llm.get_llm_response
-
-## core/load_data.py
-
-::: core.load_data.chunk_text
-::: core.load_data.process_file
-::: core.load_data.load_documents_to_qdrant
+::: backend.core.llm.QwenVisionLLM
+::: backend.core.llm.get_llm_response
 
 ## core/multimodal_rag.py
 
-::: core.multimodal_rag.LocalRAG
-::: core.multimodal_rag.LocalRAG.__init__
-::: core.multimodal_rag.LocalRAG.retrieve
-::: core.multimodal_rag.LocalRAG.generate_answer
+::: backend.core.multimodal_rag.LocalRAG
+::: backend.core.multimodal_rag.LocalRAG.retrieve_data
+::: backend.core.multimodal_rag.LocalRAG.generate_answer
 
-## core/vectordb.py
+## core/embedding_providers.py
 
-::: core.vectordb.get_qdrant
-::: core.vectordb.ensure_collection_text
-::: core.vectordb.ensure_collection_image
-::: core.vectordb.add_text_points
-::: core.vectordb.add_image_point
-::: core.vectordb.search_text
-::: core.vectordb.search_images
+::: backend.core.embedding_providers.EmbeddingProvider
+::: backend.core.embedding_providers.SentenceTransformerProvider
+::: backend.core.embedding_providers.get_provider
+
+## utils/load_data.py
+
+::: backend.utils.load_data.DataLoader
+
+## monitoring/metrics.py
+
+::: backend.monitoring.metrics.observe_http_request
+::: backend.monitoring.metrics.observe_rag_query
+::: backend.monitoring.metrics.observe_embedding_request
