@@ -25,6 +25,9 @@ dependencies = [
     "uvicorn>=0.38.0",
 ]
 
+[project.scripts]
+ingest-worker = "backend.worker:main"
+
 [dependency-groups]
 dev = [
     "ipykernel>=6.30.1",

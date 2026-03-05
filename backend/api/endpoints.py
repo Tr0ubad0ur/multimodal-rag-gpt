@@ -1,8 +1,11 @@
+import os
+import uuid
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Optional
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -21,7 +24,10 @@ from backend.core.embeddings import (
     video_embedding_from_path,
 )
 from backend.core.multimodal_rag import LocalRAG
+from backend.services.admin_rate_limiter import AdminRateLimiter
 from backend.services.ingest import IngestService
+from backend.services.ingest_jobs import IngestJobsService
+from backend.services.ingest_worker import IngestWorker
 from backend.services.kb import KBService
 from backend.services.storage import delete_stored_file, save_upload_file
 from backend.utils.config_handler import Config
@@ -33,6 +39,7 @@ REQUIRED_UPLOAD_FILE = File(...)
 OPTIONAL_UPLOAD_FILE = File(default=None)
 REQUIRED_UPLOAD_FILES = File(...)
 OPTIONAL_RELATIVE_PATHS = Form(default=None)
+_ADMIN_RATE_LIMITER = AdminRateLimiter()
 
 
 class QueryRequest(BaseModel):
@@ -43,6 +50,7 @@ class QueryRequest(BaseModel):
     image: Optional[str] = None
     model: Optional[str] = Field(default=None, max_length=256)
     attachment_id: Optional[str] = Field(default=None, max_length=64)
+    guest_session_id: Optional[str] = Field(default=None, max_length=128)
     folder_ids: list[str] = Field(default_factory=list)
     file_ids: list[str] = Field(default_factory=list)
 
@@ -180,6 +188,36 @@ def get_access_token(authorization: str = Header(None)) -> str:
     return authorization.split(' ', 1)[1].strip()
 
 
+def get_admin_access(x_admin_key: str = Header(default='')) -> bool:
+    """Protect admin-only endpoints with static admin key."""
+    admin_key = (os.getenv('ADMIN_API_KEY') or '').strip()
+    if not admin_key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail='Admin API is not configured',
+        )
+    if x_admin_key != admin_key:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Invalid admin key',
+        )
+    _enforce_admin_rate_limit()
+    return True
+
+
+def _enforce_admin_rate_limit() -> None:
+    limit = int(os.getenv('ADMIN_RATE_LIMIT_PER_MINUTE', '60'))
+    if not _ADMIN_RATE_LIMITER.is_allowed(
+        scope='admin_global',
+        limit=limit,
+        window_seconds=60,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail='Admin rate limit exceeded',
+        )
+
+
 def get_current_user(token: str = Depends(get_access_token)) -> dict:
     """Resolve current user from Supabase using access token."""
     try:
@@ -203,6 +241,123 @@ def _kb_service() -> KBService:
 
 def _ingest_service() -> IngestService:
     return IngestService()
+
+
+def _ingest_jobs_service() -> IngestJobsService:
+    return IngestJobsService()
+
+
+def _ingest_worker() -> IngestWorker:
+    return IngestWorker(max_attempts=3)
+
+
+def _enqueue_ingest_job(
+    *,
+    background_tasks: BackgroundTasks,
+    file_id: str,
+    file_path: str,
+    filename: str,
+    mime: str,
+    user_id: str | None = None,
+    guest_session_id: str | None = None,
+    source_path: str | None = None,
+    folder_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> str | None:
+    owner_id = user_id or guest_session_id
+    if not owner_id:
+        raise ValueError('Either user_id or guest_session_id must be provided')
+    owner_type = 'user' if user_id else 'guest'
+
+    jobs = _ingest_jobs_service()
+    job_id = jobs.create_job(
+        owner_type=owner_type,
+        owner_id=owner_id,
+        user_id=user_id,
+        file_id=file_id,
+        filename=filename,
+        mime=mime,
+        source_path=source_path,
+        folder_id=folder_id,
+        metadata=metadata,
+    )
+    if job_id and user_id:
+        worker = _ingest_worker()
+        background_tasks.add_task(
+            worker.process_job,
+            job_id=job_id,
+            user_id=user_id,
+        )
+    elif user_id:
+        # Safe fallback when jobs table is unavailable: ingest immediately.
+        _ingest_with_job(
+            file_id=file_id,
+            file_path=file_path,
+            filename=filename,
+            mime=mime,
+            user_id=user_id,
+            folder_id=folder_id,
+            source_path=source_path,
+            metadata=metadata,
+        )
+    return job_id
+
+
+def _ingest_with_job(
+    *,
+    file_id: str,
+    file_path: str,
+    filename: str,
+    mime: str,
+    user_id: str | None = None,
+    guest_session_id: str | None = None,
+    folder_id: str | None = None,
+    folder_name: str | None = None,
+    source_path: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    existing_job_id: str | None = None,
+) -> None:
+    owner_id = user_id or guest_session_id
+    if not owner_id:
+        raise ValueError('Either user_id or guest_session_id must be provided')
+    owner_type = 'user' if user_id else 'guest'
+
+    jobs = _ingest_jobs_service()
+    ingest = _ingest_service()
+    job_id = existing_job_id
+    if job_id is None:
+        job_id = jobs.create_job(
+            owner_type=owner_type,
+            owner_id=owner_id,
+            user_id=user_id,
+            file_id=file_id,
+            filename=filename,
+            mime=mime,
+            source_path=source_path,
+            folder_id=folder_id,
+            metadata=metadata,
+        )
+        jobs.mark_processing(job_id=job_id, attempt=1)
+    else:
+        existing = jobs.get_job(job_id=job_id, user_id=user_id)
+        next_attempt = int(existing.get('attempt') or 0) + 1 if existing else 1
+        jobs.mark_processing(job_id=job_id, attempt=next_attempt)
+    try:
+        ingest.ingest_file(
+            file_id=file_id,
+            file_path=file_path,
+            filename=filename,
+            mime=mime,
+            user_id=user_id,
+            guest_session_id=guest_session_id,
+            folder_id=folder_id,
+            folder_name=folder_name,
+            source_path=source_path,
+        )
+    except Exception as exc:
+        jobs.mark_failed(job_id=job_id, error=str(exc))
+        raise
+    jobs.mark_completed(job_id=job_id)
 
 
 def _normalize_relative_path(relative_path: str, fallback_name: str) -> str:
@@ -256,6 +411,7 @@ async def _parse_query_request(
     image_form: str | None,
     model_form: str | None,
     attachment_id_form: str | None,
+    guest_session_id_form: str | None,
     folder_ids_form: str | None,
     file_ids_form: str | None,
 ) -> QueryRequest:
@@ -285,6 +441,7 @@ async def _parse_query_request(
         'image': image_form,
         'model': model_form,
         'attachment_id': attachment_id_form,
+        'guest_session_id': guest_session_id_form,
         'folder_ids': folder_ids,
         'file_ids': file_ids,
     }
@@ -315,6 +472,7 @@ async def _prepare_attachment_data(
     request_payload: QueryRequest,
     attachment_file: UploadFile | None,
     user_id: str | None,
+    guest_session_id: str | None = None,
 ) -> tuple[list[dict[str, str]], str | None, str | None]:
     """Prepare extra context docs from attachment id or direct multipart file."""
     ingest = _ingest_service()
@@ -335,7 +493,7 @@ async def _prepare_attachment_data(
             stored.storage_path, stored.mime
         )
         if user_id:
-            ingest.ingest_file(
+            _ingest_with_job(
                 file_id=stored.file_id,
                 file_path=stored.storage_path,
                 filename=stored.filename,
@@ -343,6 +501,21 @@ async def _prepare_attachment_data(
                 user_id=user_id,
                 folder_id=None,
                 folder_name=None,
+                source_path=stored.filename,
+                metadata={'origin': 'chat_attachment', 'transient': False},
+            )
+        else:
+            _ingest_with_job(
+                file_id=stored.file_id,
+                file_path=stored.storage_path,
+                filename=stored.filename,
+                mime=stored.mime,
+                user_id=None,
+                guest_session_id=guest_session_id,
+                folder_id=None,
+                folder_name=None,
+                source_path=stored.filename,
+                metadata={'origin': 'chat_attachment', 'transient': True},
             )
         if user_id:
             return [], None, stored.file_id
@@ -356,6 +529,11 @@ async def _prepare_attachment_data(
         return docs, stored.storage_path, stored.file_id
 
     if request_payload.attachment_id:
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail='attachment_id is only available for authenticated users',
+            )
         _ = _resolve_attachment(
             attachment_id=request_payload.attachment_id, user_id=user_id
         )
@@ -457,6 +635,7 @@ def get_models(
 
 @router.post('/files/upload')
 async def upload_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = REQUIRED_UPLOAD_FILE,
     user: Annotated[dict, Depends(get_current_user)] = None,
 ) -> dict:
@@ -472,15 +651,16 @@ async def upload_file(
         storage_path=stored.storage_path,
     )
 
-    ingest = _ingest_service()
-    ingest.ingest_file(
+    job_id = _enqueue_ingest_job(
+        background_tasks=background_tasks,
         file_id=stored.file_id,
         file_path=stored.storage_path,
         filename=stored.filename,
         mime=stored.mime,
         user_id=user['id'],
         folder_id=None,
-        folder_name=None,
+        source_path=stored.filename,
+        metadata={'origin': 'files_upload', 'transient': False},
     )
 
     return {
@@ -489,11 +669,13 @@ async def upload_file(
         'mime': stored.mime,
         'size': stored.size,
         'storage_path': stored.storage_path,
+        'ingest_job_id': job_id,
     }
 
 
 @router.post('/kb/folders/upload')
 async def upload_folder_files(
+    background_tasks: BackgroundTasks,
     files: list[UploadFile] = REQUIRED_UPLOAD_FILES,
     relative_paths: list[str] | None = OPTIONAL_RELATIVE_PATHS,
     parent_id: str | None = Form(default=None),
@@ -513,7 +695,6 @@ async def upload_folder_files(
         )
 
     kb = _kb_service()
-    ingest = _ingest_service()
 
     folder_rows = kb.list_folders(user_id=user['id'])
     folder_by_parent_and_name: dict[tuple[str | None, str], str] = {}
@@ -561,11 +742,6 @@ async def upload_folder_files(
             current_parent_id = folder_id
 
         target_folder_id = current_parent_id
-        target_folder_name = (
-            folder_name_by_id.get(target_folder_id)
-            if target_folder_id is not None
-            else None
-        )
 
         # Browser folder drag/drop may send empty or extensionless upload.filename.
         # Reuse basename from relative path to keep MIME validation deterministic.
@@ -590,14 +766,16 @@ async def upload_folder_files(
                 folder_id=target_folder_id,
             )
 
-        ingest.ingest_file(
+        job_id = _enqueue_ingest_job(
+            background_tasks=background_tasks,
             file_id=stored.file_id,
             file_path=stored.storage_path,
             filename=stored.filename,
             mime=stored.mime,
             user_id=user['id'],
             folder_id=target_folder_id,
-            folder_name=target_folder_name,
+            source_path=normalized_relative_path,
+            metadata={'origin': 'folders_upload', 'transient': False},
         )
 
         uploaded_items.append(
@@ -608,6 +786,7 @@ async def upload_folder_files(
                 'size': stored.size,
                 'relative_path': normalized_relative_path,
                 'folder_id': created_file.get('folder_id'),
+                'ingest_job_id': job_id,
             }
         )
 
@@ -692,15 +871,14 @@ def delete_kb_folder(
 
 @router.post('/kb/files')
 def attach_kb_file(
+    background_tasks: BackgroundTasks,
     request: KBFileAttachRequest,
     user: Annotated[dict, Depends(get_current_user)],
 ) -> dict:
     """Attach an uploaded file to a folder and update index metadata."""
     kb = _kb_service()
-    folder_name: str | None = None
     if request.folder_id:
-        folder = kb.get_folder(folder_id=request.folder_id, user_id=user['id'])
-        folder_name = folder.get('name')
+        _ = kb.get_folder(folder_id=request.folder_id, user_id=user['id'])
 
     attached = kb.attach_file_to_folder(
         user_id=user['id'],
@@ -709,18 +887,19 @@ def attach_kb_file(
     )
     kb.delete_vectors_for_file(request.file_id)
 
-    ingest = _ingest_service()
-    ingest.ingest_file(
+    job_id = _enqueue_ingest_job(
+        background_tasks=background_tasks,
         file_id=attached['id'],
         file_path=attached['storage_path'],
         filename=attached['filename'],
         mime=attached['mime'],
         user_id=user['id'],
         folder_id=request.folder_id,
-        folder_name=folder_name,
+        source_path=attached['filename'],
+        metadata={'origin': 'attach_kb_file', 'transient': False},
     )
 
-    return {'file': attached}
+    return {'file': attached, 'ingest_job_id': job_id}
 
 
 @router.get('/kb/files')
@@ -753,6 +932,7 @@ async def ask_mixed(
     image: str | None = Form(default=None),
     model: str | None = Form(default=None),
     attachment_id: str | None = Form(default=None),
+    guest_session_id: str | None = Form(default=None),
     folder_ids: str | None = Form(default=None),
     file_ids: str | None = Form(default=None),
     attachment: UploadFile | None = OPTIONAL_UPLOAD_FILE,
@@ -765,8 +945,12 @@ async def ask_mixed(
         image,
         model,
         attachment_id,
+        guest_session_id,
         folder_ids,
         file_ids,
+    )
+    effective_guest_session_id = (
+        payload.guest_session_id or f'guest-{uuid.uuid4()}'
     )
 
     (
@@ -777,6 +961,7 @@ async def ask_mixed(
         request_payload=payload,
         attachment_file=attachment,
         user_id=None,
+        guest_session_id=effective_guest_session_id,
     )
 
     effective_file_ids = list(dict.fromkeys(payload.file_ids))
@@ -792,8 +977,12 @@ async def ask_mixed(
             file_ids=effective_file_ids or None,
             extra_docs=extra_docs,
         )
+        result['guest_session_id'] = effective_guest_session_id
         return result
     finally:
+        if attachment_file_id and transient_storage_path:
+            ingest = _ingest_service()
+            ingest.delete_vectors_for_file(file_id=attachment_file_id)
         if transient_storage_path:
             delete_stored_file(transient_storage_path)
 
@@ -807,6 +996,7 @@ async def ask_mixed_auth(
     image: str | None = Form(default=None),
     model: str | None = Form(default=None),
     attachment_id: str | None = Form(default=None),
+    guest_session_id: str | None = Form(default=None),
     folder_ids: str | None = Form(default=None),
     file_ids: str | None = Form(default=None),
     attachment: UploadFile | None = OPTIONAL_UPLOAD_FILE,
@@ -819,6 +1009,7 @@ async def ask_mixed_auth(
         image,
         model,
         attachment_id,
+        guest_session_id,
         folder_ids,
         file_ids,
     )
@@ -871,6 +1062,212 @@ async def ask_mixed_auth(
     finally:
         if transient_storage_path:
             delete_stored_file(transient_storage_path)
+
+
+@router.get('/ingest/jobs')
+def list_ingest_jobs(
+    status: str | None = None,
+    limit: int = 50,
+    user: Annotated[dict, Depends(get_current_user)] = None,
+) -> dict:
+    """List ingest jobs for the current authenticated user."""
+    resolved_limit = max(1, min(limit, 200))
+    jobs = _ingest_jobs_service()
+    jobs.refresh_depth_metrics()
+    data = jobs.list_jobs(
+        user_id=user['id'],
+        status=status,
+        limit=resolved_limit,
+    )
+    return {'data': data}
+
+
+@router.get('/ingest/jobs/{job_id}')
+def get_ingest_job(
+    job_id: str,
+    user: Annotated[dict, Depends(get_current_user)] = None,
+) -> dict:
+    """Get one ingest job for the current authenticated user."""
+    jobs = _ingest_jobs_service()
+    job = jobs.get_job(job_id=job_id, user_id=user['id'])
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Ingest job not found',
+        )
+    return {'job': job}
+
+
+@router.get('/ingest/dlq')
+def list_ingest_dlq(
+    limit: int = 50,
+    user: Annotated[dict, Depends(get_current_user)] = None,
+) -> dict:
+    """List DLQ items for the current authenticated user."""
+    resolved_limit = max(1, min(limit, 200))
+    jobs = _ingest_jobs_service()
+    jobs.refresh_depth_metrics()
+    data = jobs.list_dlq(user_id=user['id'], limit=resolved_limit)
+    return {'data': data}
+
+
+@router.get('/ingest/dlq/{dlq_id}')
+def get_ingest_dlq_item(
+    dlq_id: int,
+    user: Annotated[dict, Depends(get_current_user)] = None,
+) -> dict:
+    """Get one DLQ item for the current authenticated user."""
+    jobs = _ingest_jobs_service()
+    item = jobs.get_dlq_item(dlq_id=dlq_id, user_id=user['id'])
+    if not item:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Ingest DLQ item not found',
+        )
+    return {'item': item}
+
+
+@router.post('/ingest/dlq/{dlq_id}/requeue')
+def requeue_ingest_dlq_item(
+    dlq_id: int,
+    background_tasks: BackgroundTasks,
+    user: Annotated[dict, Depends(get_current_user)] = None,
+) -> dict:
+    """Requeue DLQ item back to ingest queue and schedule processing."""
+    jobs = _ingest_jobs_service()
+    job = jobs.requeue_from_dlq(dlq_id=dlq_id, user_id=user['id'])
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Ingest DLQ item not found or cannot be requeued',
+        )
+
+    worker = _ingest_worker()
+    background_tasks.add_task(
+        worker.process_job,
+        job_id=str(job['id']),
+        user_id=user['id'],
+    )
+    return {'job': job}
+
+
+@router.post('/ingest/jobs/{job_id}/retry')
+def retry_ingest_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    user: Annotated[dict, Depends(get_current_user)] = None,
+) -> dict:
+    """Retry failed ingest job for a persisted user file."""
+    jobs = _ingest_jobs_service()
+    job = jobs.get_job(job_id=job_id, user_id=user['id'])
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Ingest job not found',
+        )
+    if job.get('owner_type') != 'user':
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Only user-owned jobs can be retried',
+        )
+    if job.get('status') != 'failed':
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Only failed jobs can be retried',
+        )
+
+    jobs.mark_queued(job_id=job_id)
+    worker = _ingest_worker()
+    background_tasks.add_task(
+        worker.process_job,
+        job_id=job_id,
+        user_id=user['id'],
+    )
+
+    updated = jobs.get_job(job_id=job_id, user_id=user['id'])
+    return {'job': updated}
+
+
+@router.post('/admin/ingest/replay')
+def admin_replay_ingest_jobs(
+    background_tasks: BackgroundTasks,
+    status_filter: str = 'failed',
+    limit: int = 50,
+    user_id: str | None = None,
+    _: Annotated[bool, Depends(get_admin_access)] = False,
+) -> dict:
+    """Admin: replay queued/failed jobs in batches."""
+    allowed = {'queued', 'failed'}
+    if status_filter not in allowed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'status_filter must be one of: {sorted(allowed)}',
+        )
+
+    jobs = _ingest_jobs_service()
+    worker = _ingest_worker()
+    selected = jobs.list_jobs_admin(
+        status=status_filter,
+        limit=max(1, min(limit, 500)),
+        user_id=user_id,
+    )
+
+    replayed_ids: list[str] = []
+    for job in selected:
+        job_id = str(job.get('id') or '')
+        owner_user_id = job.get('user_id')
+        if not job_id or not owner_user_id:
+            continue
+        jobs.mark_queued(job_id=job_id)
+        background_tasks.add_task(
+            worker.process_job,
+            job_id=job_id,
+            user_id=str(owner_user_id),
+        )
+        replayed_ids.append(job_id)
+
+    jobs.refresh_depth_metrics()
+    return {
+        'selected': len(selected),
+        'replayed': len(replayed_ids),
+        'ids': replayed_ids,
+    }
+
+
+@router.post('/admin/ingest/purge')
+def admin_purge_ingest_data(
+    older_than_hours: int = 24 * 7,
+    statuses: str = 'completed,failed',
+    purge_dlq: bool = True,
+    limit: int = 500,
+    _: Annotated[bool, Depends(get_admin_access)] = False,
+) -> dict:
+    """Admin: purge old ingest jobs and DLQ entries in batches."""
+    parsed_statuses = [s.strip() for s in statuses.split(',') if s.strip()]
+    allowed_statuses = {'completed', 'failed'}
+    invalid = [s for s in parsed_statuses if s not in allowed_statuses]
+    if invalid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Unsupported statuses: {invalid}',
+        )
+    if not parsed_statuses:
+        parsed_statuses = ['completed', 'failed']
+
+    jobs = _ingest_jobs_service()
+    purged_jobs = jobs.purge_jobs(
+        statuses=parsed_statuses,
+        older_than_hours=max(1, older_than_hours),
+        limit=max(1, min(limit, 2000)),
+    )
+    purged_dlq = 0
+    if purge_dlq:
+        purged_dlq = jobs.purge_dlq(
+            older_than_hours=max(1, older_than_hours),
+            limit=max(1, min(limit, 2000)),
+        )
+    jobs.refresh_depth_metrics()
+    return {'purged_jobs': purged_jobs, 'purged_dlq': purged_dlq}
 
 
 @router.post('/embed/text')

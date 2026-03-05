@@ -73,6 +73,18 @@ EMBED_TYPE=video python scripts/ingest_qdrant.py
 
 # Запуск ручки swagger на FastAPI
 uvicorn backend.main:app --reload
+
+# Отдельный воркер очереди индексации (рекомендуется в prod)
+INGEST_POLLER_ENABLED=false uvicorn backend.main:app --reload
+uv run ingest-worker
+# (опционально) лимит параллельной обработки задач воркером
+INGEST_WORKER_MAX_CONCURRENCY=4 uv run ingest-worker
+# (опционально) лимит admin-ручек в минуту
+ADMIN_RATE_LIMIT_PER_MINUTE=60
+# (опционально) Redis fallback для distributed rate limit, если DB RPC недоступен
+REDIS_URL=redis://localhost:6379/0
+# (обязательно для admin API) ключ для X-Admin-Key
+ADMIN_API_KEY=change-me
 ```
 
 > [!note]

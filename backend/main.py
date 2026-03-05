@@ -1,6 +1,8 @@
+import asyncio
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 from typing import Dict
 
 from fastapi import FastAPI, Request
@@ -10,13 +12,50 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from backend.api.endpoints import router
 from backend.monitoring.metrics import observe_http_request
+from backend.services.ingest_poller import IngestPoller
 from backend.utils.log_config import setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
 
 
-app = FastAPI(title='Multimodal RAG Backend', version='0.1')
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start and stop background services tied to app lifecycle."""
+    poller_enabled = os.getenv(
+        'INGEST_POLLER_ENABLED', 'true'
+    ).strip().lower() not in {'0', 'false', 'no', 'off'}
+    if not poller_enabled:
+        yield
+        return
+
+    interval = int(os.getenv('INGEST_POLLER_INTERVAL_SECONDS', '5'))
+    batch_size = int(os.getenv('INGEST_POLLER_BATCH_SIZE', '10'))
+    stale_seconds = int(os.getenv('INGEST_POLLER_STALE_SECONDS', '300'))
+    max_concurrency = int(os.getenv('INGEST_WORKER_MAX_CONCURRENCY', '4'))
+    poller = IngestPoller(
+        interval_seconds=max(1, interval),
+        batch_size=max(1, batch_size),
+        stale_seconds=max(30, stale_seconds),
+        max_concurrency=max(1, max_concurrency),
+    )
+    app.state.ingest_poller = poller
+    app.state.ingest_poller_task = asyncio.create_task(poller.run())
+    try:
+        yield
+    finally:
+        task = getattr(app.state, 'ingest_poller_task', None)
+        poller = getattr(app.state, 'ingest_poller', None)
+        if poller is not None:
+            poller.stop()
+        if task is not None:
+            try:
+                await task
+            except Exception:
+                logger.exception('Failed to stop ingest poller cleanly')
+
+
+app = FastAPI(title='Multimodal RAG Backend', version='0.1', lifespan=lifespan)
 
 default_origins = [
     'http://localhost:3000',

@@ -1,6 +1,6 @@
 import re
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 HTTP_REQUESTS_TOTAL = Counter(
     'http_requests_total',
@@ -42,6 +42,26 @@ EMBEDDING_DURATION_SECONDS = Histogram(
     'Embedding generation latency in seconds.',
     ['modality', 'provider'],
     buckets=(0.01, 0.03, 0.05, 0.1, 0.3, 0.5, 1.0, 3.0, 5.0, 10.0, 30.0),
+)
+
+INGEST_JOB_EVENTS_TOTAL = Counter(
+    'ingest_job_events_total',
+    'Total number of ingest job lifecycle events.',
+    ['event', 'result'],
+)
+INGEST_RETRY_DELAY_SECONDS = Histogram(
+    'ingest_retry_delay_seconds',
+    'Delay before next ingest retry in seconds.',
+    buckets=(1, 5, 10, 20, 30, 60, 120, 300, 600, 1800),
+)
+INGEST_QUEUE_DEPTH = Gauge(
+    'ingest_queue_depth',
+    'Current ingest job queue depth by status.',
+    ['status'],
+)
+INGEST_DLQ_DEPTH = Gauge(
+    'ingest_dlq_depth',
+    'Current ingest dead-letter queue depth.',
 )
 
 
@@ -107,3 +127,23 @@ def observe_embedding_request(
         modality=modality,
         provider=provider,
     ).observe(duration_seconds)
+
+
+def observe_ingest_job_event(event: str, result: str = 'ok') -> None:
+    """Observe ingest job event counters."""
+    INGEST_JOB_EVENTS_TOTAL.labels(event=event, result=result).inc()
+
+
+def observe_ingest_retry_delay(delay_seconds: float) -> None:
+    """Observe scheduled retry delay."""
+    INGEST_RETRY_DELAY_SECONDS.observe(max(delay_seconds, 0.0))
+
+
+def set_ingest_queue_depth(status: str, depth: int) -> None:
+    """Set ingest queue depth gauge for status."""
+    INGEST_QUEUE_DEPTH.labels(status=status).set(max(depth, 0))
+
+
+def set_ingest_dlq_depth(depth: int) -> None:
+    """Set ingest DLQ depth gauge."""
+    INGEST_DLQ_DEPTH.set(max(depth, 0))

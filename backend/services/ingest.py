@@ -8,7 +8,14 @@ from zipfile import ZipFile
 
 import pdfplumber
 from PIL import Image
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
 
 from backend.core.embeddings import text_embedding
 from backend.utils.config_handler import Config
@@ -63,11 +70,18 @@ class IngestService:
         file_path: str,
         filename: str,
         mime: str,
-        user_id: str,
+        user_id: str | None = None,
+        guest_session_id: str | None = None,
         folder_id: str | None = None,
         folder_name: str | None = None,
+        source_path: str | None = None,
     ) -> None:
         """Extract chunks, embed them and upsert to Qdrant with metadata."""
+        owner_id = user_id or guest_session_id
+        if not owner_id:
+            raise ValueError('Either user_id or guest_session_id must be set')
+        owner_type = 'user' if user_id else 'guest'
+
         self.text_client.create_collection()
         path = Path(file_path)
 
@@ -86,10 +100,30 @@ class IngestService:
             source=str(path),
             filename=filename,
             mime=mime,
+            source_path=source_path,
             user_id=user_id,
+            guest_session_id=guest_session_id,
+            owner_type=owner_type,
+            owner_id=owner_id,
             folder_id=folder_id,
             folder_name=folder_name,
         )
+
+    def delete_vectors_for_file(self, *, file_id: str) -> None:
+        """Delete all vectors for file id from all known collections."""
+        selector = Filter(
+            must=[
+                FieldCondition(key='file_id', match=MatchValue(value=file_id))
+            ]
+        )
+        for collection_name in self._all_collection_names():
+            try:
+                self.text_client.client.delete(
+                    collection_name=collection_name,
+                    points_selector=selector,
+                )
+            except Exception:
+                continue
 
     def _extract_text_chunks(self, path: Path, mime: str) -> list[str]:
         if mime == 'application/pdf':
@@ -146,7 +180,11 @@ class IngestService:
         source: str,
         filename: str,
         mime: str,
-        user_id: str,
+        source_path: str | None,
+        user_id: str | None,
+        guest_session_id: str | None,
+        owner_type: str,
+        owner_id: str,
         folder_id: str | None,
         folder_name: str | None,
     ) -> None:
@@ -173,9 +211,13 @@ class IngestService:
                     payload={
                         'text': text,
                         'source': source,
+                        'source_path': source_path,
                         'filename': filename,
                         'mime': mime,
                         'user_id': user_id,
+                        'guest_session_id': guest_session_id,
+                        'owner_type': owner_type,
+                        'owner_id': owner_id,
                         'folder_id': folder_id,
                         'folder_scope': folder_scope,
                         'file_id': file_id,
@@ -190,7 +232,7 @@ class IngestService:
                 points=points,
             )
             scoped_collection = self._scoped_collection_name(
-                user_id=user_id,
+                owner_id=owner_id,
                 folder_id=folder_id,
                 folder_name=folder_name,
             )
@@ -217,7 +259,7 @@ class IngestService:
     def _scoped_collection_name(
         self,
         *,
-        user_id: str,
+        owner_id: str,
         folder_id: str | None,
         folder_name: str | None,
     ) -> str:
@@ -225,6 +267,13 @@ class IngestService:
         normalized_scope = re.sub(r'[^a-zA-Z0-9_]+', '_', raw_scope).strip('_')
         if not normalized_scope:
             normalized_scope = ROOT_SCOPE
-        short_user = user_id.replace('-', '')[:8]
+        short_owner = owner_id.replace('-', '').replace(':', '')[:8]
         short_folder = (folder_id or ROOT_SCOPE).replace('-', '')[:8]
-        return f'kb_{short_user}_{normalized_scope}_{short_folder}'
+        return f'kb_{short_owner}_{normalized_scope}_{short_folder}'
+
+    def _all_collection_names(self) -> list[str]:
+        try:
+            collections = self.text_client.client.get_collections().collections
+            return [collection.name for collection in collections]
+        except Exception:
+            return [self.text_client.collection_name]
