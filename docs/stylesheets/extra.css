@@ -1,3 +1,7 @@
 :root {
   --md-primary-fg-color: rgb(97, 200, 225);
 }
+
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: rgb(14, 21, 39);
+}
