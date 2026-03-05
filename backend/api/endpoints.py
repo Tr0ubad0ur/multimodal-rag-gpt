@@ -1,4 +1,4 @@
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Optional
 
 from fastapi import (
@@ -12,6 +12,7 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 
 from backend.core.embeddings import (
@@ -30,6 +31,8 @@ router = APIRouter()
 rag = LocalRAG()
 REQUIRED_UPLOAD_FILE = File(...)
 OPTIONAL_UPLOAD_FILE = File(default=None)
+REQUIRED_UPLOAD_FILES = File(...)
+OPTIONAL_RELATIVE_PATHS = Form(default=None)
 
 
 class QueryRequest(BaseModel):
@@ -200,6 +203,23 @@ def _kb_service() -> KBService:
 
 def _ingest_service() -> IngestService:
     return IngestService()
+
+
+def _normalize_relative_path(relative_path: str, fallback_name: str) -> str:
+    """Normalize user-supplied relative path for folder upload."""
+    raw = (relative_path or '').replace('\\', '/').strip()
+    normalized = raw.strip('/')
+    if not normalized:
+        normalized = fallback_name
+
+    parsed = PurePosixPath(normalized)
+    parts = [part for part in parsed.parts if part not in {'', '.'}]
+    if not parts or any(part == '..' for part in parts):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f'Invalid relative path: {relative_path!r}',
+        )
+    return '/'.join(parts)
 
 
 async def _parse_auth_request(
@@ -472,6 +492,128 @@ async def upload_file(
     }
 
 
+@router.post('/kb/folders/upload')
+async def upload_folder_files(
+    files: list[UploadFile] = REQUIRED_UPLOAD_FILES,
+    relative_paths: list[str] | None = OPTIONAL_RELATIVE_PATHS,
+    parent_id: str | None = Form(default=None),
+    user: Annotated[dict, Depends(get_current_user)] = None,
+) -> dict:
+    """Upload multiple files and recreate provided folder structure in KB."""
+    if not files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='At least one file is required',
+        )
+
+    if relative_paths is not None and len(relative_paths) != len(files):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='relative_paths length must match files length',
+        )
+
+    kb = _kb_service()
+    ingest = _ingest_service()
+
+    folder_rows = kb.list_folders(user_id=user['id'])
+    folder_by_parent_and_name: dict[tuple[str | None, str], str] = {}
+    folder_name_by_id: dict[str, str] = {}
+    for folder in folder_rows:
+        folder_id = folder['id']
+        folder_by_parent_and_name[
+            (folder.get('parent_id'), folder.get('name'))
+        ] = folder_id
+        folder_name_by_id[folder_id] = folder.get('name') or ''
+
+    if parent_id is not None:
+        parent_folder = kb.get_folder(folder_id=parent_id, user_id=user['id'])
+        folder_name_by_id[parent_id] = parent_folder.get('name') or ''
+
+    uploaded_items: list[dict[str, Any]] = []
+
+    for idx, upload in enumerate(files):
+        client_relative_path = (
+            relative_paths[idx]
+            if relative_paths is not None and idx < len(relative_paths)
+            else ''
+        )
+        normalized_relative_path = _normalize_relative_path(
+            client_relative_path,
+            upload.filename or '',
+        )
+        parsed_path = PurePosixPath(normalized_relative_path)
+        filename = parsed_path.name
+        folder_parts = parsed_path.parts[:-1]
+
+        current_parent_id = parent_id
+        for part in folder_parts:
+            key = (current_parent_id, part)
+            folder_id = folder_by_parent_and_name.get(key)
+            if folder_id is None:
+                created = kb.create_folder(
+                    user_id=user['id'],
+                    name=part,
+                    parent_id=current_parent_id,
+                )
+                folder_id = created['id']
+                folder_by_parent_and_name[key] = folder_id
+                folder_name_by_id[folder_id] = created.get('name') or part
+            current_parent_id = folder_id
+
+        target_folder_id = current_parent_id
+        target_folder_name = (
+            folder_name_by_id.get(target_folder_id)
+            if target_folder_id is not None
+            else None
+        )
+
+        # Browser folder drag/drop may send empty or extensionless upload.filename.
+        # Reuse basename from relative path to keep MIME validation deterministic.
+        upload_filename = (upload.filename or '').strip()
+        if not Path(upload_filename).suffix and Path(filename).suffix:
+            upload.filename = filename
+
+        stored = await save_upload_file(upload)
+        created_file = kb.create_uploaded_file_record(
+            user_id=user['id'],
+            file_id=stored.file_id,
+            filename=stored.filename,
+            mime=stored.mime,
+            size=stored.size,
+            storage_path=stored.storage_path,
+        )
+
+        if target_folder_id is not None:
+            created_file = kb.attach_file_to_folder(
+                user_id=user['id'],
+                file_id=stored.file_id,
+                folder_id=target_folder_id,
+            )
+
+        ingest.ingest_file(
+            file_id=stored.file_id,
+            file_path=stored.storage_path,
+            filename=stored.filename,
+            mime=stored.mime,
+            user_id=user['id'],
+            folder_id=target_folder_id,
+            folder_name=target_folder_name,
+        )
+
+        uploaded_items.append(
+            {
+                'file_id': stored.file_id,
+                'filename': filename,
+                'mime': stored.mime,
+                'size': stored.size,
+                'relative_path': normalized_relative_path,
+                'folder_id': created_file.get('folder_id'),
+            }
+        )
+
+    return {'uploaded': uploaded_items}
+
+
 @router.delete('/files/{file_id}')
 def delete_file(
     file_id: str,
@@ -481,6 +623,38 @@ def delete_file(
     kb = _kb_service()
     kb.delete_file(file_id=file_id, user_id=user['id'])
     return {'ok': True}
+
+
+@router.get('/files/{file_id}')
+def get_file_metadata(
+    file_id: str,
+    user: Annotated[dict, Depends(get_current_user)],
+) -> dict:
+    """Return uploaded file metadata for the current user."""
+    kb = _kb_service()
+    file_row = kb.get_file(file_id=file_id, user_id=user['id'])
+    return {'file': file_row}
+
+
+@router.get('/files/{file_id}/download')
+def download_file(
+    file_id: str,
+    user: Annotated[dict, Depends(get_current_user)],
+) -> FileResponse:
+    """Download uploaded file with original filename and MIME type."""
+    kb = _kb_service()
+    file_row = kb.get_file(file_id=file_id, user_id=user['id'])
+    file_path = Path(file_row['storage_path'])
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='Stored file not found',
+        )
+    return FileResponse(
+        path=str(file_path),
+        media_type=file_row.get('mime') or 'application/octet-stream',
+        filename=file_row.get('filename') or file_path.name,
+    )
 
 
 @router.get('/kb/tree')
@@ -772,8 +946,3 @@ def delete_history(
         .execute()
     )
     return {'ok': True}
-
-
-# TODO write this requests
-# @router.post('/test_llm')
-# @router.post('/test_qdrant')
