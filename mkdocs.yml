@@ -41,18 +41,21 @@ theme:
         name: Системная тема
     - media: "(prefers-color-scheme: light)"
       scheme: default
-      primary: green
+      primary: custom
       accent: teal
       toggle:
         icon: material/lightbulb
         name: Тёмная тема
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: green
+      primary: custom
       accent: teal
       toggle:
         icon: material/lightbulb-outline
         name: Светлая тема
+
+extra_css:
+  - stylesheets/extra.css
 
 extra:
   social:
