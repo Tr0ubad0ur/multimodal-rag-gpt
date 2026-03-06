@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import uuid
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -74,6 +75,7 @@ class IngestService:
         guest_session_id: str | None = None,
         folder_id: str | None = None,
         folder_name: str | None = None,
+        folder_path: str | None = None,
         source_path: str | None = None,
     ) -> None:
         """Extract chunks, embed them and upsert to Qdrant with metadata."""
@@ -107,6 +109,7 @@ class IngestService:
             owner_id=owner_id,
             folder_id=folder_id,
             folder_name=folder_name,
+            folder_path=folder_path,
         )
 
     def delete_vectors_for_file(self, *, file_id: str) -> None:
@@ -144,11 +147,16 @@ class IngestService:
         return self.loader.chunk_text(text) if text else []
 
     def _extract_image_chunks(self, path: Path) -> list[str]:
+        if not Config.ingest_enable_ocr:
+            return [f'Image attachment content from file: {path.name}']
         try:
             import pytesseract
 
             with Image.open(path) as image:
-                extracted = pytesseract.image_to_string(image).strip()
+                extracted = pytesseract.image_to_string(
+                    image,
+                    timeout=max(1, Config.ingest_ocr_timeout_seconds),
+                ).strip()
             if extracted:
                 return self.loader.chunk_text(extracted)
         except Exception:
@@ -187,11 +195,13 @@ class IngestService:
         owner_id: str,
         folder_id: str | None,
         folder_name: str | None,
+        folder_path: str | None,
     ) -> None:
         if not chunks:
             return
 
         folder_scope = folder_id or ROOT_SCOPE
+        ingested_at = datetime.now(timezone.utc).isoformat()
         points: list[PointStruct] = []
         for idx, chunk in enumerate(chunks):
             text = chunk.strip()
@@ -219,9 +229,11 @@ class IngestService:
                         'owner_type': owner_type,
                         'owner_id': owner_id,
                         'folder_id': folder_id,
+                        'folder_path': folder_path,
                         'folder_scope': folder_scope,
                         'file_id': file_id,
                         'modality': 'text',
+                        'ingested_at': ingested_at,
                     },
                 )
             )

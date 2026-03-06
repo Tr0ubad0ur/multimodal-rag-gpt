@@ -25,10 +25,12 @@ from backend.core.embeddings import (
 )
 from backend.core.multimodal_rag import LocalRAG
 from backend.services.admin_rate_limiter import AdminRateLimiter
+from backend.services.data_consistency import DataConsistencyService
 from backend.services.ingest import IngestService
 from backend.services.ingest_jobs import IngestJobsService
 from backend.services.ingest_worker import IngestWorker
 from backend.services.kb import KBService
+from backend.services.request_rate_limiter import RequestRateLimiter
 from backend.services.storage import delete_stored_file, save_upload_file
 from backend.utils.config_handler import Config
 from backend.utils.supabase_client import get_supabase_client
@@ -40,6 +42,35 @@ OPTIONAL_UPLOAD_FILE = File(default=None)
 REQUIRED_UPLOAD_FILES = File(...)
 OPTIONAL_RELATIVE_PATHS = Form(default=None)
 _ADMIN_RATE_LIMITER = AdminRateLimiter()
+_REQUEST_RATE_LIMITER = RequestRateLimiter()
+
+DEFAULT_MAX_FILES_PER_USER = 2000
+DEFAULT_MAX_STORAGE_BYTES_PER_USER = 10 * 1024 * 1024 * 1024
+DEFAULT_MAX_FILES_PER_FOLDER_UPLOAD = 100
+DEFAULT_ASK_RATE_LIMIT_PER_MINUTE_AUTH = 120
+DEFAULT_ASK_RATE_LIMIT_PER_MINUTE_GUEST = 40
+DEFAULT_UPLOAD_RATE_LIMIT_PER_MINUTE_AUTH = 60
+DEFAULT_UPLOAD_RATE_LIMIT_PER_MINUTE_GUEST = 20
+
+
+def _to_auth_http_exception(exc: Exception) -> HTTPException:
+    """Map Supabase auth exceptions to user-facing HTTP errors."""
+    message = str(exc)
+    normalized = message.lower()
+    if 'invalid login credentials' in normalized:
+        return HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail='Invalid email or password',
+        )
+    if 'user already registered' in normalized:
+        return HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='User already registered',
+        )
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=message or 'Authentication failed',
+    )
 
 
 class QueryRequest(BaseModel):
@@ -218,6 +249,66 @@ def _enforce_admin_rate_limit() -> None:
         )
 
 
+def _env_int(name: str, default: int, *, min_value: int = 1) -> int:
+    raw = (os.getenv(name) or '').strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f'Invalid integer for {name}',
+        ) from exc
+    return max(min_value, value)
+
+
+def _client_identifier(request: Request) -> str:
+    forwarded = (request.headers.get('x-forwarded-for') or '').strip()
+    if forwarded:
+        return forwarded.split(',')[0].strip()
+    return getattr(request.client, 'host', 'unknown') or 'unknown'
+
+
+def _enforce_request_rate_limit(
+    *, scope: str, limit: int, message: str
+) -> None:
+    if not _REQUEST_RATE_LIMITER.is_allowed(
+        scope=scope,
+        limit=limit,
+        window_seconds=60,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=message,
+        )
+
+
+def _enforce_quota_capacity(
+    *,
+    total_files_after: int,
+    total_size_after: int,
+) -> None:
+    max_files = _env_int(
+        'MAX_FILES_PER_USER',
+        DEFAULT_MAX_FILES_PER_USER,
+    )
+    max_storage = _env_int(
+        'MAX_STORAGE_BYTES_PER_USER',
+        DEFAULT_MAX_STORAGE_BYTES_PER_USER,
+    )
+    if total_files_after > max_files:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail='User file quota exceeded',
+        )
+    if total_size_after > max_storage:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail='User storage quota exceeded',
+        )
+
+
 def get_current_user(token: str = Depends(get_access_token)) -> dict:
     """Resolve current user from Supabase using access token."""
     try:
@@ -251,6 +342,10 @@ def _ingest_worker() -> IngestWorker:
     return IngestWorker(max_attempts=3)
 
 
+def _consistency_service() -> DataConsistencyService:
+    return DataConsistencyService()
+
+
 def _enqueue_ingest_job(
     *,
     background_tasks: BackgroundTasks,
@@ -262,6 +357,7 @@ def _enqueue_ingest_job(
     guest_session_id: str | None = None,
     source_path: str | None = None,
     folder_id: str | None = None,
+    folder_path: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> str | None:
     owner_id = user_id or guest_session_id
@@ -270,6 +366,9 @@ def _enqueue_ingest_job(
     owner_type = 'user' if user_id else 'guest'
 
     jobs = _ingest_jobs_service()
+    effective_metadata = dict(metadata or {})
+    if folder_path is not None:
+        effective_metadata.setdefault('folder_path', folder_path)
     job_id = jobs.create_job(
         owner_type=owner_type,
         owner_id=owner_id,
@@ -279,7 +378,7 @@ def _enqueue_ingest_job(
         mime=mime,
         source_path=source_path,
         folder_id=folder_id,
-        metadata=metadata,
+        metadata=effective_metadata,
     )
     if job_id and user_id:
         worker = _ingest_worker()
@@ -297,6 +396,7 @@ def _enqueue_ingest_job(
             mime=mime,
             user_id=user_id,
             folder_id=folder_id,
+            folder_path=folder_path,
             source_path=source_path,
             metadata=metadata,
         )
@@ -313,6 +413,7 @@ def _ingest_with_job(
     guest_session_id: str | None = None,
     folder_id: str | None = None,
     folder_name: str | None = None,
+    folder_path: str | None = None,
     source_path: str | None = None,
     metadata: dict[str, Any] | None = None,
     existing_job_id: str | None = None,
@@ -324,6 +425,9 @@ def _ingest_with_job(
 
     jobs = _ingest_jobs_service()
     ingest = _ingest_service()
+    effective_metadata = dict(metadata or {})
+    if folder_path is not None:
+        effective_metadata.setdefault('folder_path', folder_path)
     job_id = existing_job_id
     if job_id is None:
         job_id = jobs.create_job(
@@ -335,7 +439,7 @@ def _ingest_with_job(
             mime=mime,
             source_path=source_path,
             folder_id=folder_id,
-            metadata=metadata,
+            metadata=effective_metadata,
         )
         jobs.mark_processing(job_id=job_id, attempt=1)
     else:
@@ -352,6 +456,7 @@ def _ingest_with_job(
             guest_session_id=guest_session_id,
             folder_id=folder_id,
             folder_name=folder_name,
+            folder_path=folder_path,
             source_path=source_path,
         )
     except Exception as exc:
@@ -481,6 +586,19 @@ async def _prepare_attachment_data(
         stored = await save_upload_file(attachment_file)
         if user_id:
             kb = _kb_service()
+            usage = kb.get_user_storage_usage(user_id=user_id)
+            _enforce_quota_capacity(
+                total_files_after=usage['total_files'] + 1,
+                total_size_after=usage['total_size'] + stored.size,
+            )
+            existing = kb.find_existing_file_by_hash(
+                user_id=user_id,
+                folder_id=None,
+                content_hash=stored.content_hash,
+            )
+            if existing:
+                delete_stored_file(stored.storage_path)
+                return [], None, existing['id']
             kb.create_uploaded_file_record(
                 user_id=user_id,
                 file_id=stored.file_id,
@@ -488,6 +606,8 @@ async def _prepare_attachment_data(
                 mime=stored.mime,
                 size=stored.size,
                 storage_path=stored.storage_path,
+                content_hash=stored.content_hash,
+                folder_id=None,
             )
         attachment_context_chunks = ingest.extract_attachment_context(
             stored.storage_path, stored.mime
@@ -501,6 +621,7 @@ async def _prepare_attachment_data(
                 user_id=user_id,
                 folder_id=None,
                 folder_name=None,
+                folder_path='root',
                 source_path=stored.filename,
                 metadata={'origin': 'chat_attachment', 'transient': False},
             )
@@ -514,6 +635,7 @@ async def _prepare_attachment_data(
                 guest_session_id=guest_session_id,
                 folder_id=None,
                 folder_name=None,
+                folder_path='root',
                 source_path=stored.filename,
                 metadata={'origin': 'chat_attachment', 'transient': True},
             )
@@ -551,9 +673,12 @@ async def signup(
     """Sign up a user with email/password via Supabase."""
     auth_request = await _parse_auth_request(request, email, password)
     supabase = get_supabase_client(role='anon')
-    resp = supabase.auth.sign_up(
-        {'email': auth_request.email, 'password': auth_request.password}
-    )
+    try:
+        resp = supabase.auth.sign_up(
+            {'email': auth_request.email, 'password': auth_request.password}
+        )
+    except Exception as exc:
+        raise _to_auth_http_exception(exc) from exc
     return {
         'user': _serialize(getattr(resp, 'user', None)),
         'session': _serialize(getattr(resp, 'session', None)),
@@ -569,9 +694,12 @@ async def signin(
     """Sign in a user with email/password via Supabase."""
     auth_request = await _parse_auth_request(request, email, password)
     supabase = get_supabase_client(role='anon')
-    resp = supabase.auth.sign_in_with_password(
-        {'email': auth_request.email, 'password': auth_request.password}
-    )
+    try:
+        resp = supabase.auth.sign_in_with_password(
+            {'email': auth_request.email, 'password': auth_request.password}
+        )
+    except Exception as exc:
+        raise _to_auth_http_exception(exc) from exc
     return {
         'user': _serialize(getattr(resp, 'user', None)),
         'session': _serialize(getattr(resp, 'session', None)),
@@ -640,8 +768,40 @@ async def upload_file(
     user: Annotated[dict, Depends(get_current_user)] = None,
 ) -> dict:
     """Upload a file from chat attachment and persist metadata."""
+    upload_limit = _env_int(
+        'UPLOAD_RATE_LIMIT_PER_MINUTE_AUTH',
+        DEFAULT_UPLOAD_RATE_LIMIT_PER_MINUTE_AUTH,
+    )
+    _enforce_request_rate_limit(
+        scope=f'upload_auth:{user["id"]}',
+        limit=upload_limit,
+        message='Upload rate limit exceeded',
+    )
+
     stored = await save_upload_file(file)
     kb = _kb_service()
+    usage = kb.get_user_storage_usage(user_id=user['id'])
+    _enforce_quota_capacity(
+        total_files_after=usage['total_files'] + 1,
+        total_size_after=usage['total_size'] + stored.size,
+    )
+    existing = kb.find_existing_file_by_hash(
+        user_id=user['id'],
+        folder_id=None,
+        content_hash=stored.content_hash,
+    )
+    if existing:
+        delete_stored_file(stored.storage_path)
+        return {
+            'file_id': existing['id'],
+            'filename': existing['filename'],
+            'mime': existing['mime'],
+            'size': existing['size'],
+            'storage_path': existing['storage_path'],
+            'ingest_job_id': None,
+            'deduplicated': True,
+        }
+
     kb.create_uploaded_file_record(
         user_id=user['id'],
         file_id=stored.file_id,
@@ -649,6 +809,8 @@ async def upload_file(
         mime=stored.mime,
         size=stored.size,
         storage_path=stored.storage_path,
+        content_hash=stored.content_hash,
+        folder_id=None,
     )
 
     job_id = _enqueue_ingest_job(
@@ -659,6 +821,7 @@ async def upload_file(
         mime=stored.mime,
         user_id=user['id'],
         folder_id=None,
+        folder_path='root',
         source_path=stored.filename,
         metadata={'origin': 'files_upload', 'transient': False},
     )
@@ -670,6 +833,7 @@ async def upload_file(
         'size': stored.size,
         'storage_path': stored.storage_path,
         'ingest_job_id': job_id,
+        'deduplicated': False,
     }
 
 
@@ -687,6 +851,24 @@ async def upload_folder_files(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='At least one file is required',
         )
+    max_folder_upload_files = _env_int(
+        'MAX_FILES_PER_FOLDER_UPLOAD',
+        DEFAULT_MAX_FILES_PER_FOLDER_UPLOAD,
+    )
+    if len(files) > max_folder_upload_files:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail='Too many files in one folder upload request',
+        )
+    upload_limit = _env_int(
+        'UPLOAD_RATE_LIMIT_PER_MINUTE_AUTH',
+        DEFAULT_UPLOAD_RATE_LIMIT_PER_MINUTE_AUTH,
+    )
+    _enforce_request_rate_limit(
+        scope=f'upload_auth:{user["id"]}',
+        limit=upload_limit,
+        message='Upload rate limit exceeded',
+    )
 
     if relative_paths is not None and len(relative_paths) != len(files):
         raise HTTPException(
@@ -695,6 +877,9 @@ async def upload_folder_files(
         )
 
     kb = _kb_service()
+    usage = kb.get_user_storage_usage(user_id=user['id'])
+    projected_files = usage['total_files']
+    projected_size = usage['total_size']
 
     folder_rows = kb.list_folders(user_id=user['id'])
     folder_by_parent_and_name: dict[tuple[str | None, str], str] = {}
@@ -750,6 +935,33 @@ async def upload_folder_files(
             upload.filename = filename
 
         stored = await save_upload_file(upload)
+        existing = kb.find_existing_file_by_hash(
+            user_id=user['id'],
+            folder_id=target_folder_id,
+            content_hash=stored.content_hash,
+        )
+        if existing:
+            delete_stored_file(stored.storage_path)
+            uploaded_items.append(
+                {
+                    'file_id': existing['id'],
+                    'filename': filename,
+                    'mime': existing['mime'],
+                    'size': existing['size'],
+                    'relative_path': normalized_relative_path,
+                    'folder_id': existing.get('folder_id'),
+                    'ingest_job_id': None,
+                    'deduplicated': True,
+                }
+            )
+            continue
+        _enforce_quota_capacity(
+            total_files_after=projected_files + 1,
+            total_size_after=projected_size + stored.size,
+        )
+        projected_files += 1
+        projected_size += stored.size
+
         created_file = kb.create_uploaded_file_record(
             user_id=user['id'],
             file_id=stored.file_id,
@@ -757,6 +969,8 @@ async def upload_folder_files(
             mime=stored.mime,
             size=stored.size,
             storage_path=stored.storage_path,
+            content_hash=stored.content_hash,
+            folder_id=target_folder_id,
         )
 
         if target_folder_id is not None:
@@ -774,6 +988,7 @@ async def upload_folder_files(
             mime=stored.mime,
             user_id=user['id'],
             folder_id=target_folder_id,
+            folder_path='/'.join(folder_parts) if folder_parts else 'root',
             source_path=normalized_relative_path,
             metadata={'origin': 'folders_upload', 'transient': False},
         )
@@ -787,6 +1002,7 @@ async def upload_folder_files(
                 'relative_path': normalized_relative_path,
                 'folder_id': created_file.get('folder_id'),
                 'ingest_job_id': job_id,
+                'deduplicated': False,
             }
         )
 
@@ -813,6 +1029,55 @@ def get_file_metadata(
     kb = _kb_service()
     file_row = kb.get_file(file_id=file_id, user_id=user['id'])
     return {'file': file_row}
+
+
+@router.get('/files/{file_id}/processing')
+def get_file_processing(
+    file_id: str,
+    user: Annotated[dict, Depends(get_current_user)],
+) -> dict:
+    """Return latest ingest processing status for a file."""
+    kb = _kb_service()
+    _ = kb.get_file(file_id=file_id, user_id=user['id'])
+    jobs = _ingest_jobs_service()
+    file_jobs = jobs.list_jobs_for_file(
+        user_id=user['id'],
+        file_id=file_id,
+        limit=20,
+    )
+    latest = file_jobs[0] if file_jobs else None
+    status_value = latest.get('status') if latest else 'not_indexed'
+    return {'file_id': file_id, 'status': status_value, 'jobs': file_jobs}
+
+
+@router.post('/files/{file_id}/reindex')
+def reindex_file(
+    file_id: str,
+    background_tasks: BackgroundTasks,
+    user: Annotated[dict, Depends(get_current_user)],
+) -> dict:
+    """Schedule reindex for one user file and enqueue worker processing."""
+    kb = _kb_service()
+    _ = kb.get_file(file_id=file_id, user_id=user['id'])
+    consistency = _consistency_service()
+    result = consistency.schedule_reindex(
+        user_id=user['id'],
+        file_ids=[file_id],
+        limit=1,
+        only_missing_vectors=False,
+    )
+    worker = _ingest_worker()
+    for job in result.get('jobs', []):
+        job_id = str(job.get('job_id') or '')
+        owner_user_id = str(job.get('user_id') or '')
+        if not job_id or not owner_user_id:
+            continue
+        background_tasks.add_task(
+            worker.process_job,
+            job_id=job_id,
+            user_id=owner_user_id,
+        )
+    return result
 
 
 @router.get('/files/{file_id}/download')
@@ -886,6 +1151,10 @@ def attach_kb_file(
         folder_id=request.folder_id,
     )
     kb.delete_vectors_for_file(request.file_id)
+    folder_path = kb.get_folder_path(
+        user_id=user['id'],
+        folder_id=request.folder_id,
+    )
 
     job_id = _enqueue_ingest_job(
         background_tasks=background_tasks,
@@ -895,6 +1164,7 @@ def attach_kb_file(
         mime=attached['mime'],
         user_id=user['id'],
         folder_id=request.folder_id,
+        folder_path=folder_path,
         source_path=attached['filename'],
         metadata={'origin': 'attach_kb_file', 'transient': False},
     )
@@ -952,6 +1222,28 @@ async def ask_mixed(
     effective_guest_session_id = (
         payload.guest_session_id or f'guest-{uuid.uuid4()}'
     )
+    guest_subject = effective_guest_session_id
+    if not guest_subject:
+        guest_subject = _client_identifier(request)
+    ask_limit = _env_int(
+        'ASK_RATE_LIMIT_PER_MINUTE_GUEST',
+        DEFAULT_ASK_RATE_LIMIT_PER_MINUTE_GUEST,
+    )
+    _enforce_request_rate_limit(
+        scope=f'ask_guest:{guest_subject}',
+        limit=ask_limit,
+        message='Ask rate limit exceeded',
+    )
+    if attachment is not None:
+        upload_limit_guest = _env_int(
+            'UPLOAD_RATE_LIMIT_PER_MINUTE_GUEST',
+            DEFAULT_UPLOAD_RATE_LIMIT_PER_MINUTE_GUEST,
+        )
+        _enforce_request_rate_limit(
+            scope=f'upload_guest:{guest_subject}',
+            limit=upload_limit_guest,
+            message='Upload rate limit exceeded',
+        )
 
     (
         extra_docs,
@@ -1013,6 +1305,25 @@ async def ask_mixed_auth(
         folder_ids,
         file_ids,
     )
+    ask_limit = _env_int(
+        'ASK_RATE_LIMIT_PER_MINUTE_AUTH',
+        DEFAULT_ASK_RATE_LIMIT_PER_MINUTE_AUTH,
+    )
+    _enforce_request_rate_limit(
+        scope=f'ask_auth:{user["id"]}',
+        limit=ask_limit,
+        message='Ask rate limit exceeded',
+    )
+    if attachment is not None:
+        upload_limit = _env_int(
+            'UPLOAD_RATE_LIMIT_PER_MINUTE_AUTH',
+            DEFAULT_UPLOAD_RATE_LIMIT_PER_MINUTE_AUTH,
+        )
+        _enforce_request_rate_limit(
+            scope=f'upload_auth:{user["id"]}',
+            limit=upload_limit,
+            message='Upload rate limit exceeded',
+        )
 
     kb = _kb_service()
     (
@@ -1268,6 +1579,73 @@ def admin_purge_ingest_data(
         )
     jobs.refresh_depth_metrics()
     return {'purged_jobs': purged_jobs, 'purged_dlq': purged_dlq}
+
+
+@router.post('/admin/consistency/reindex')
+def admin_reindex_files(
+    background_tasks: BackgroundTasks,
+    user_id: str | None = None,
+    limit: int = 100,
+    only_missing_vectors: bool = False,
+    _: Annotated[bool, Depends(get_admin_access)] = False,
+) -> dict:
+    """Admin: schedule reindex jobs for selected user files."""
+    consistency = _consistency_service()
+    result = consistency.schedule_reindex(
+        user_id=user_id,
+        file_ids=None,
+        limit=max(1, min(limit, 2_000)),
+        only_missing_vectors=only_missing_vectors,
+    )
+    worker = _ingest_worker()
+    for job in result.get('jobs', []):
+        job_id = str(job.get('job_id') or '')
+        owner_user_id = str(job.get('user_id') or '')
+        if not job_id or not owner_user_id:
+            continue
+        background_tasks.add_task(
+            worker.process_job,
+            job_id=job_id,
+            user_id=owner_user_id,
+        )
+    return result
+
+
+@router.post('/admin/consistency/cleanup')
+def admin_cleanup_consistency(
+    dry_run: bool = True,
+    cleanup_missing_storage_records: bool = True,
+    cleanup_orphan_uploads: bool = True,
+    cleanup_orphan_vectors: bool = True,
+    uploads_min_age_seconds: int = 1_800,
+    limit: int = 500,
+    _: Annotated[bool, Depends(get_admin_access)] = False,
+) -> dict:
+    """Admin: cleanup orphan records/files/vectors and return report."""
+    consistency = _consistency_service()
+    report: dict[str, Any] = {'dry_run': dry_run}
+
+    if cleanup_missing_storage_records:
+        report['missing_storage_records'] = (
+            consistency.cleanup_missing_storage_records(
+                dry_run=dry_run,
+                user_id=None,
+                limit=max(1, min(limit, 2_000)),
+            )
+        )
+    if cleanup_orphan_uploads:
+        report['orphan_uploads'] = consistency.cleanup_orphan_uploads(
+            dry_run=dry_run,
+            min_age_seconds=max(0, uploads_min_age_seconds),
+            limit=max(1, min(limit, 2_000)),
+        )
+    if cleanup_orphan_vectors:
+        report['orphan_vectors'] = consistency.cleanup_orphan_vectors(
+            dry_run=dry_run,
+            limit_orphan_file_ids=max(1, min(limit, 5_000)),
+        )
+
+    return report
 
 
 @router.post('/embed/text')

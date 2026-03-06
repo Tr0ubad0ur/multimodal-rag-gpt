@@ -29,6 +29,8 @@ class KBService:
         mime: str,
         size: int,
         storage_path: str,
+        content_hash: str | None = None,
+        folder_id: str | None = None,
     ) -> dict[str, Any]:
         """Persist uploaded file metadata in kb_files."""
         resp = (
@@ -37,16 +39,44 @@ class KBService:
                 {
                     'id': file_id,
                     'user_id': user_id,
-                    'folder_id': None,
+                    'folder_id': folder_id,
                     'filename': filename,
                     'mime': mime,
                     'size': size,
                     'storage_path': storage_path,
+                    'content_hash': content_hash,
                 }
             )
             .execute()
         )
         return (getattr(resp, 'data', None) or [{}])[0]
+
+    def find_existing_file_by_hash(
+        self,
+        *,
+        user_id: str,
+        folder_id: str | None,
+        content_hash: str,
+    ) -> dict[str, Any] | None:
+        """Find existing file with same content hash in the same folder."""
+        query = (
+            self.supabase.table('kb_files')
+            .select('*')
+            .eq('user_id', user_id)
+            .eq('content_hash', content_hash)
+            .order('created_at', desc=True)
+            .limit(1)
+        )
+        if folder_id is None:
+            query = query.is_('folder_id', None)
+        else:
+            query = query.eq('folder_id', folder_id)
+
+        resp = query.execute()
+        data = getattr(resp, 'data', None) or []
+        if not data:
+            return None
+        return data[0]
 
     def get_file(self, *, file_id: str, user_id: str) -> dict[str, Any]:
         """Return one file row for a user or raise 404."""
@@ -119,6 +149,19 @@ class KBService:
 
         resp = query.execute()
         return getattr(resp, 'data', None) or []
+
+    def get_user_storage_usage(self, *, user_id: str) -> dict[str, int]:
+        """Return aggregate file count and size for user KB files."""
+        resp = (
+            self.supabase.table('kb_files')
+            .select('size')
+            .eq('user_id', user_id)
+            .execute()
+        )
+        rows = getattr(resp, 'data', None) or []
+        total_files = len(rows)
+        total_size = sum(int(row.get('size') or 0) for row in rows)
+        return {'total_files': total_files, 'total_size': total_size}
 
     def attach_file_to_folder(
         self, *, user_id: str, file_id: str, folder_id: str | None
@@ -258,6 +301,26 @@ class KBService:
             stack.extend(children_by_parent.get(current, []))
         return sorted(expanded)
 
+    def get_folder_path(self, *, user_id: str, folder_id: str | None) -> str:
+        """Build slash-separated folder path from root to folder id."""
+        if folder_id is None:
+            return 'root'
+
+        folders = self.list_folders(user_id=user_id)
+        by_id = {folder['id']: folder for folder in folders}
+        if folder_id not in by_id:
+            return 'root'
+
+        parts: list[str] = []
+        current_id: str | None = folder_id
+        while current_id and current_id in by_id:
+            node = by_id[current_id]
+            parts.append(str(node.get('name') or current_id))
+            current_id = node.get('parent_id')
+
+        parts.reverse()
+        return '/'.join(parts) if parts else 'root'
+
     def _delete_vectors_by_file_id(self, file_id: str) -> None:
         selector = Filter(
             must=[
@@ -275,6 +338,28 @@ class KBService:
     def delete_vectors_for_file(self, file_id: str) -> None:
         """Delete file vectors from all collections."""
         self._delete_vectors_by_file_id(file_id)
+
+    def has_vectors_for_file(self, *, file_id: str) -> bool:
+        """Check whether at least one vector exists for a file id."""
+        selector = Filter(
+            must=[
+                FieldCondition(key='file_id', match=MatchValue(value=file_id))
+            ]
+        )
+        for collection in self._all_collection_names():
+            try:
+                points, _ = self.qdrant.scroll(
+                    collection_name=collection,
+                    scroll_filter=selector,
+                    with_payload=False,
+                    with_vectors=False,
+                    limit=1,
+                )
+                if points:
+                    return True
+            except Exception:
+                continue
+        return False
 
     def _update_vectors_folder_id(
         self, *, file_id: str, folder_id: str | None

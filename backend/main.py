@@ -12,6 +12,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from backend.api.endpoints import router
 from backend.monitoring.metrics import observe_http_request
+from backend.services.health_checks import check_dependencies
 from backend.services.ingest_poller import IngestPoller
 from backend.utils.log_config import setup_logging
 
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Start and stop background services tied to app lifecycle."""
     poller_enabled = os.getenv(
-        'INGEST_POLLER_ENABLED', 'true'
+        'INGEST_POLLER_ENABLED', 'false'
     ).strip().lower() not in {'0', 'false', 'no', 'off'}
     if not poller_enabled:
         yield
@@ -147,3 +148,21 @@ def root() -> Dict[str, str]:
         }
     """
     return {'message': 'Multimodal RAG backend is running!!!'}
+
+
+@app.get('/health/live')
+def health_live() -> Dict[str, str]:
+    """Liveness probe."""
+    return {'status': 'ok'}
+
+
+@app.get('/health/ready', response_model=None)
+def health_ready() -> JSONResponse:
+    """Readiness probe with dependency checks."""
+    deps = check_dependencies(mode='web')
+    is_ready = all(bool(item.get('ok')) for item in deps.values())
+    payload: Dict[str, object] = {
+        'status': 'ready' if is_ready else 'not_ready',
+        'dependencies': deps,
+    }
+    return JSONResponse(status_code=200 if is_ready else 503, content=payload)

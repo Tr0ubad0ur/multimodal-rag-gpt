@@ -98,6 +98,30 @@ class IngestJobsService:
         except Exception:
             return []
 
+    def list_jobs_for_file(
+        self,
+        *,
+        user_id: str,
+        file_id: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """List ingest jobs for one file and user."""
+        if self.supabase is None:
+            return []
+        try:
+            resp = (
+                self.supabase.table('ingest_jobs')
+                .select('*')
+                .eq('user_id', user_id)
+                .eq('file_id', file_id)
+                .order('created_at', desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return getattr(resp, 'data', None) or []
+        except Exception:
+            return []
+
     def list_jobs_admin(
         self,
         *,

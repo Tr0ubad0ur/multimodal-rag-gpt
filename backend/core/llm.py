@@ -4,13 +4,33 @@ from typing import Any, Dict, List
 import requests
 import torch
 from PIL import Image
-from transformers import AutoModelForVision2Seq, AutoProcessor
+from transformers import AutoProcessor
 
 from backend.utils.config_handler import Config
 
 logger = logging.getLogger(__name__)
 
 MODEL_NAME = Config.llm_model_name
+
+
+def _resolve_auto_model_class():
+    """Resolve compatible transformers AutoModel class for vision-text."""
+    try:
+        from transformers import AutoModelForVision2Seq
+
+        return AutoModelForVision2Seq
+    except ImportError:
+        pass
+
+    try:
+        from transformers import AutoModelForImageTextToText
+
+        return AutoModelForImageTextToText
+    except ImportError as exc:
+        raise ImportError(
+            'No compatible vision-text auto model class found in transformers. '
+            'Install a newer transformers version.'
+        ) from exc
 
 
 class QwenVisionLLM:
@@ -25,7 +45,8 @@ class QwenVisionLLM:
         """Initialize the Vision LLM, loading the model and processor."""
         logger.info(f'Loading {Config.llm_model_name}...')
         self.processor = AutoProcessor.from_pretrained(MODEL_NAME)
-        self.model = AutoModelForVision2Seq.from_pretrained(
+        model_cls = _resolve_auto_model_class()
+        self.model = model_cls.from_pretrained(
             MODEL_NAME,
             torch_dtype=torch.float16
             if torch.backends.mps.is_available()
@@ -129,36 +150,40 @@ def get_llm_response(prompt, context=None, image=None, model=None) -> str:
     """
     backend = _resolve_llm_backend(model)
 
+    if Config.llm_fast_mode:
+        if context:
+            snippets: List[str] = []
+            for item in context[: max(1, Config.rag_max_context_docs)]:
+                text = (item.get('text') or '').strip()
+                if text:
+                    snippets.append(text[:300])
+            if snippets:
+                joined = ' '.join(snippets)
+                return f'Быстрый режим: {joined[:600]}'
+        return 'Быстрый режим: данных недостаточно для уверенного ответа.'
+
     if context:
-        by_source: Dict[str, List[str]] = {}
-        for item in context:
+        limited_docs = context[: max(1, Config.rag_max_context_docs)]
+        context_blocks: List[str] = []
+        remaining = max(200, Config.rag_max_context_chars)
+        for idx, item in enumerate(limited_docs, start=1):
             source = item.get('source') or 'unknown'
-            by_source.setdefault(source, []).append(item.get('text', ''))
+            text = (item.get('text') or '').strip()
+            if not text:
+                continue
+            chunk = text[:remaining]
+            context_blocks.append(f'[{idx}] {source}\n{chunk}')
+            remaining -= len(chunk)
+            if remaining <= 0:
+                break
 
-        summaries: List[str] = []
-        for source, texts in by_source.items():
-            source_text = '\n'.join(texts).strip()
-            source_prompt = (
-                'Сформулируй ОДНО короткое предложение, о чем этот источник. '
-                'Используй только информацию из текста. '
-                'Не повторяй слова "Источник", "Текст", "Запрос", не цитируй текст. '
-                'Не добавляй лишние заголовки.\n\n'
-                f'Текст:\n{source_text}\n\n'
-                f'Запрос пользователя: {prompt}'
-            )
-            raw_summary = backend.generate(
-                source_prompt, context=None, image=image
-            )
-            # Sanitize common prompt-echo artifacts
-            summary = (
-                raw_summary.replace('Источник:', '')
-                .replace('Текст:', '')
-                .replace('Запрос пользователя:', '')
-                .replace('Summary:', '')
-                .strip()
-            )
-            summaries.append(f'- {source}: {summary}')
-
-        return '\n'.join(summaries)
+        combined_context = '\n\n'.join(context_blocks)
+        combined_prompt = (
+            'Ответь кратко и по делу, опираясь только на контекст ниже. '
+            'Если данных недостаточно, так и напиши.\n\n'
+            f'Контекст:\n{combined_context}\n\n'
+            f'Вопрос: {prompt}'
+        )
+        return backend.generate(combined_prompt, context=None, image=image)
 
     return backend.generate(prompt, context=None, image=image)

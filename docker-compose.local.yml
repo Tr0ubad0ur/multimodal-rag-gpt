@@ -1,0 +1,113 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+
+  rag-web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: multimodal-rag-gpt:local
+    env_file:
+      - .env
+    environment:
+      INGEST_POLLER_ENABLED: "false"
+      QDRANT_URL: http://qdrant:6333
+      LLM_MAX_NEW_TOKENS: "96"
+      RAG_MAX_CONTEXT_DOCS: "3"
+      RAG_MAX_CONTEXT_CHARS: "1600"
+      LLM_FAST_MODE: "true"
+      INGEST_ENABLE_OCR: "false"
+      EMBEDDING_VIDEO_SAMPLE_FPS: "0.25"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+      - "18000:8000"
+    volumes:
+      - ./data/uploads:/app/data/uploads
+    depends_on:
+      - qdrant
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live', timeout=3)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  rag-worker:
+    image: multimodal-rag-gpt:local
+    pull_policy: never
+    env_file:
+      - .env
+    environment:
+      APP_MODE: worker
+      INGEST_POLLER_ENABLED: "false"
+      INGEST_WORKER_MAX_CONCURRENCY: "4"
+      QDRANT_URL: http://qdrant:6333
+      INGEST_ENABLE_OCR: "false"
+      EMBEDDING_VIDEO_SAMPLE_FPS: "0.25"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["uvicorn", "backend.worker_app:app", "--host", "0.0.0.0", "--port", "8010"]
+    ports:
+      - "8010:8010"
+    volumes:
+      - ./data/uploads:/app/data/uploads
+    depends_on:
+      - qdrant
+      - rag-web
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8010/health/live', timeout=3)",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.7.2
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    depends_on:
+      - rag-web
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  qdrant_storage:

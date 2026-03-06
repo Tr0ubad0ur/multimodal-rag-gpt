@@ -57,39 +57,94 @@ uv run pre-commit install
 uv sync
 ```
 
-## 3. Запусти векторную базу Qdrant
+## 3. Запуск backend через Docker
+
+### 3.0 Одна команда (web + worker + qdrant + monitoring)
 
 ```bash
-# Быстрый запуск
-docker run -p 6333:6333 qdrant/qdrant
-
-# Рекомендуемый запуск с сохранением данных (один раз загрузи тестовые данные)
-docker compose -f docker-compose.qdrant.yml up -d
-python scripts/ingest_qdrant.py
-# Для изображений
-EMBED_TYPE=image python scripts/ingest_qdrant.py
-# Для видео
-EMBED_TYPE=video python scripts/ingest_qdrant.py
-
-# Запуск ручки swagger на FastAPI
-uvicorn backend.main:app --reload
-
-# Отдельный воркер очереди индексации (рекомендуется в prod)
-INGEST_POLLER_ENABLED=false uvicorn backend.main:app --reload
-uv run ingest-worker
-# (опционально) лимит параллельной обработки задач воркером
-INGEST_WORKER_MAX_CONCURRENCY=4 uv run ingest-worker
-# (опционально) лимит admin-ручек в минуту
-ADMIN_RATE_LIMIT_PER_MINUTE=60
-# (опционально) Redis fallback для distributed rate limit, если DB RPC недоступен
-REDIS_URL=redis://localhost:6379/0
-# (обязательно для admin API) ключ для X-Admin-Key
-ADMIN_API_KEY=change-me
+docker compose -f docker-compose.local.yml up -d --build
 ```
 
-> [!note]
-> Qdrant хранит данные в volume `qdrant_storage`. После первой загрузки
-> `python scripts/ingest_qdrant.py` повторять не нужно — данные сохраняются.
+Проверка:
+
+```bash
+curl -s http://localhost:8000/health/ready | jq .
+curl -s http://localhost:8010/health/ready | jq .
+```
+
+Остановка:
+
+```bash
+docker compose -f docker-compose.local.yml down
+```
+
+```bash
+# 1) Поднять Qdrant
+docker compose -f docker-compose.qdrant.yml up -d
+
+# 2) Собрать образ backend
+docker build -t multimodal-rag-gpt:local .
+
+# 3) Запустить web API
+docker run --rm --name rag-web \
+  -p 8000:8000 \
+  --env-file .env \
+  -e INGEST_POLLER_ENABLED=false \
+  -v "$(pwd)/data/uploads:/app/data/uploads" \
+  multimodal-rag-gpt:local
+
+# 4) В отдельном терминале запустить worker API (health/readiness + jobs)
+docker run --rm --name rag-worker \
+  -p 8010:8010 \
+  --env-file .env \
+  -e APP_MODE=worker \
+  -e INGEST_POLLER_ENABLED=false \
+  -e INGEST_WORKER_MAX_CONCURRENCY=4 \
+  -v "$(pwd)/data/uploads:/app/data/uploads" \
+  multimodal-rag-gpt:local \
+  uvicorn backend.worker_app:app --host 0.0.0.0 --port 8010
+```
+
+Полезные env-переменные:
+- `ADMIN_API_KEY` (обязательно для `X-Admin-Key` на admin API)
+- `ADMIN_RATE_LIMIT_PER_MINUTE` (опционально)
+- `REDIS_URL` (опционально, fallback для distributed rate limit)
+
+### Production env checklist (web + worker)
+
+Обязательные переменные:
+
+- `SUPABASE_URL`
+- `SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `QDRANT_URL`
+
+Для `web` дополнительно:
+
+- `ADMIN_API_KEY`
+- `INGEST_POLLER_ENABLED=false` (встроенный poller в web отключен)
+- `ADMIN_RATE_LIMIT_PER_MINUTE` (целое число `>=1`)
+- `ASK_RATE_LIMIT_PER_MINUTE_AUTH` (опционально, по умолчанию `120`)
+- `ASK_RATE_LIMIT_PER_MINUTE_GUEST` (опционально, по умолчанию `40`)
+- `UPLOAD_RATE_LIMIT_PER_MINUTE_AUTH` (опционально, по умолчанию `60`)
+- `UPLOAD_RATE_LIMIT_PER_MINUTE_GUEST` (опционально, по умолчанию `20`)
+- `MAX_FILES_PER_USER` (опционально, по умолчанию `2000`)
+- `MAX_STORAGE_BYTES_PER_USER` (опционально, по умолчанию `10737418240`)
+- `MAX_FILES_PER_FOLDER_UPLOAD` (опционально, по умолчанию `100`)
+- `MAX_UPLOAD_SIZE_BYTES` (опционально, по умолчанию `52428800`)
+
+Для `worker` дополнительно:
+
+- `INGEST_WORKER_MAX_CONCURRENCY` (целое число `>=1`)
+
+Опционально:
+
+- `REDIS_URL` (если задан, должен начинаться с `redis://` или `rediss://`)
+
+Проверка:
+
+- `GET /health/ready` для web
+- `GET /health/ready` на worker (например, `:8010/health/ready`)
 
 ## 3.1 Локальный Supabase (Auth + Postgres)
 
@@ -159,11 +214,7 @@ curl -X DELETE "http://localhost:8000/history/<ID>" \
 ## 3.3 Разделение данных Qdrant по пользователям
 
 Если нужно хранить разные данные для разных пользователей, добавляй `user_id`
-в payload при индексации. Для тестовых данных можно задать переменную окружения:
-
-```bash
-USER_ID="<SUPABASE_USER_ID>" python scripts/ingest_qdrant.py
-```
+в payload при индексации.
 
 В запросах `POST /ask_auth` поиск идет с фильтром по `user_id`.
 
@@ -192,12 +243,8 @@ curl "http://localhost:8000/metrics"
 ## 3.5 Prometheus + Grafana
 
 ```bash
-# backend должен быть запущен локально на :8000
+# Запуск мониторинга локально через Docker
 docker compose -f docker-compose.monitoring.yml up -d
-
-# UI
-# Prometheus: http://localhost:9090
-# Grafana: http://localhost:3000 (admin/admin)
 ```
 
 В Grafana автоматически подключается datasource Prometheus и дашборд
@@ -242,6 +289,53 @@ pytest -q tests/unit
 pytest -q tests/integration
 ```
 
+## 3.8 Consistency операции (reindex + cleanup)
+
+```bash
+# Переиндексация одного файла пользователя
+curl -X POST "http://localhost:8000/files/<FILE_ID>/reindex" \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+
+# Admin: массовая переиндексация (все или только missing vectors)
+curl -X POST "http://localhost:8000/admin/consistency/reindex?limit=200&only_missing_vectors=true" \
+  -H "X-Admin-Key: <ADMIN_API_KEY>"
+
+# Admin: dry-run cleanup (orphan uploads/vectors и missing storage records)
+curl -X POST "http://localhost:8000/admin/consistency/cleanup?dry_run=true" \
+  -H "X-Admin-Key: <ADMIN_API_KEY>"
+
+# Admin: реальный cleanup
+curl -X POST "http://localhost:8000/admin/consistency/cleanup?dry_run=false" \
+  -H "X-Admin-Key: <ADMIN_API_KEY>"
+```
+
+## 3.9 Нагрузочное тестирование (baseline)
+
+```bash
+# ASK нагрузка (guest или auth при передаче --token)
+python scripts/load_test_ask.py \
+  --base-url http://localhost:8000 \
+  --endpoint /ask_auth \
+  --token "<ACCESS_TOKEN>" \
+  --requests 500 \
+  --concurrency 50
+
+# Upload нагрузка для auth
+BASE_URL=http://localhost:8000 \
+TOKEN="<ACCESS_TOKEN>" \
+FILE_PATH="data/test_data/sample.txt" \
+REQUESTS=200 \
+PARALLEL=20 \
+bash scripts/load_test_upload.sh
+```
+
+Сценарии для production проверки:
+
+- пиковые burst-запросы на `/ask_auth`;
+- параллельные upload в `/files/upload` и `/kb/folders/upload`;
+- рестарт worker-процесса под нагрузкой (проверка, что jobs не теряются и подбираются заново);
+- recovery после partial failures (ошибки Qdrant/Supabase, рост retry и DLQ).
+
 ## 4. Структура проекта
 
 ```bash
@@ -266,8 +360,6 @@ project-root/
 ├── docs/
 │   ├── en
 │   └── ru
-├── frontend
-│   ├── ...
 ├── notebooks
 │   └── workflow.ipynb
 ├── .env

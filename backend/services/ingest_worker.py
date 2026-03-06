@@ -63,6 +63,10 @@ class IngestWorker:
                     user_id=owner_user_id,
                 )
                 folder_name = folder.get('name')
+            folder_path = self.kb.get_folder_path(
+                user_id=owner_user_id,
+                folder_id=folder_id,
+            )
 
             # Make retry idempotent for Qdrant.
             self.kb.delete_vectors_for_file(file_id)
@@ -74,6 +78,7 @@ class IngestWorker:
                 user_id=owner_user_id,
                 folder_id=folder_id,
                 folder_name=folder_name,
+                folder_path=folder_path,
                 source_path=job.get('source_path') or file_row.get('filename'),
             )
             self.jobs.mark_completed(job_id=job_id)

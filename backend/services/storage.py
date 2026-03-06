@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import mimetypes
 import os
 import shutil
@@ -50,6 +51,7 @@ class StoredFile:
     mime: str
     size: int
     storage_path: str
+    content_hash: str
 
 
 def _safe_filename(filename: str) -> str:
@@ -79,11 +81,27 @@ def validate_mime(mime: str | None, filename: str) -> str:
     return resolved_mime
 
 
+def _resolve_max_upload_size(
+    explicit_value: int | None,
+) -> int:
+    if explicit_value is not None:
+        return explicit_value
+    raw = (os.getenv('MAX_UPLOAD_SIZE_BYTES') or '').strip()
+    if not raw:
+        return DEFAULT_MAX_UPLOAD_SIZE_BYTES
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_UPLOAD_SIZE_BYTES
+    return max(1, value)
+
+
 async def save_upload_file(
     upload: UploadFile,
-    max_upload_size_bytes: int = DEFAULT_MAX_UPLOAD_SIZE_BYTES,
+    max_upload_size_bytes: int | None = None,
 ) -> StoredFile:
     """Persist an uploaded file to local storage with validation."""
+    max_size = _resolve_max_upload_size(max_upload_size_bytes)
     if not upload.filename:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -99,16 +117,18 @@ async def save_upload_file(
     destination = UPLOADS_DIR / disk_name
 
     total_size = 0
+    hasher = hashlib.sha256()
     with destination.open('wb') as out:
         while True:
             chunk = await upload.read(1024 * 1024)
             if not chunk:
                 break
             total_size += len(chunk)
-            if total_size > max_upload_size_bytes:
+            hasher.update(chunk)
+            if total_size > max_size:
                 destination.unlink(missing_ok=True)
                 raise HTTPException(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                     detail='File is too large',
                 )
             out.write(chunk)
@@ -119,6 +139,7 @@ async def save_upload_file(
         mime=mime,
         size=total_size,
         storage_path=str(destination),
+        content_hash=hasher.hexdigest(),
     )
 
 
