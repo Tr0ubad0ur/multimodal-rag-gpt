@@ -54,6 +54,19 @@ class StoredFile:
     content_hash: str
 
 
+def _storage_error(
+    *, status_code: int, detail: str, error_code: str
+) -> HTTPException:
+    """Build upload/storage validation error with stable code."""
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            'detail': detail,
+            'error_code': error_code,
+        },
+    )
+
+
 def _safe_filename(filename: str) -> str:
     return Path(filename).name.replace(' ', '_')
 
@@ -71,12 +84,13 @@ def validate_mime(mime: str | None, filename: str) -> str:
         resolved_mime = by_extension
 
     if resolved_mime not in ALLOWED_MIME_TYPES:
-        raise HTTPException(
+        raise _storage_error(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
                 f'Unsupported MIME type: {resolved_mime or "unknown"} '
                 f'for extension: {file_extension or "unknown"}'
             ),
+            error_code='unsupported_mime_type',
         )
     return resolved_mime
 
@@ -103,9 +117,10 @@ async def save_upload_file(
     """Persist an uploaded file to local storage with validation."""
     max_size = _resolve_max_upload_size(max_upload_size_bytes)
     if not upload.filename:
-        raise HTTPException(
+        raise _storage_error(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='filename is required',
+            error_code='filename_is_required',
         )
 
     mime = validate_mime(upload.content_type, upload.filename)
@@ -127,9 +142,10 @@ async def save_upload_file(
             hasher.update(chunk)
             if total_size > max_size:
                 destination.unlink(missing_ok=True)
-                raise HTTPException(
+                raise _storage_error(
                     status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                     detail='File is too large',
+                    error_code='file_is_too_large',
                 )
             out.write(chunk)
 

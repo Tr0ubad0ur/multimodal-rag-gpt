@@ -54,6 +54,23 @@ INGEST_RETRY_DELAY_SECONDS = Histogram(
     'Delay before next ingest retry in seconds.',
     buckets=(1, 5, 10, 20, 30, 60, 120, 300, 600, 1800),
 )
+INGEST_QUEUE_AGE_SECONDS = Histogram(
+    'ingest_queue_age_seconds',
+    'Time spent waiting in queue before processing starts.',
+    buckets=(0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800),
+)
+INGEST_PROCESSING_DURATION_SECONDS = Histogram(
+    'ingest_processing_duration_seconds',
+    'Time spent processing one ingest job attempt.',
+    ['status'],
+    buckets=(0.1, 0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800),
+)
+INGEST_END_TO_END_LATENCY_SECONDS = Histogram(
+    'ingest_end_to_end_latency_seconds',
+    'Time from ingest job creation to terminal state.',
+    ['status'],
+    buckets=(0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600, 7200),
+)
 INGEST_QUEUE_DEPTH = Gauge(
     'ingest_queue_depth',
     'Current ingest job queue depth by status.',
@@ -137,6 +154,29 @@ def observe_ingest_job_event(event: str, result: str = 'ok') -> None:
 def observe_ingest_retry_delay(delay_seconds: float) -> None:
     """Observe scheduled retry delay."""
     INGEST_RETRY_DELAY_SECONDS.observe(max(delay_seconds, 0.0))
+
+
+def observe_ingest_queue_age(age_seconds: float) -> None:
+    """Observe how long a job waited before processing."""
+    INGEST_QUEUE_AGE_SECONDS.observe(max(age_seconds, 0.0))
+
+
+def observe_ingest_processing_duration(
+    *, status: str, duration_seconds: float
+) -> None:
+    """Observe one processing attempt duration."""
+    INGEST_PROCESSING_DURATION_SECONDS.labels(status=status).observe(
+        max(duration_seconds, 0.0)
+    )
+
+
+def observe_ingest_end_to_end_latency(
+    *, status: str, duration_seconds: float
+) -> None:
+    """Observe total time from job creation to terminal state."""
+    INGEST_END_TO_END_LATENCY_SECONDS.labels(status=status).observe(
+        max(duration_seconds, 0.0)
+    )
 
 
 def set_ingest_queue_depth(status: str, depth: int) -> None:

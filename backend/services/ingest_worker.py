@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from time import perf_counter
 
 from fastapi import HTTPException
 
+from backend.monitoring.metrics import (
+    observe_ingest_end_to_end_latency,
+    observe_ingest_processing_duration,
+    observe_ingest_queue_age,
+)
 from backend.services.ingest import IngestService
 from backend.services.ingest_jobs import IngestJobsService
 from backend.services.kb import KBService
@@ -28,11 +34,24 @@ class IngestWorker:
             return
         if job.get('status') == 'completed':
             return
+        created_at = self._parse_dt(job.get('created_at'))
+        processing_started_at = datetime.now(timezone.utc)
+        started_perf = perf_counter()
+        if created_at is not None and job.get('status') != 'processing':
+            observe_ingest_queue_age(
+                (processing_started_at - created_at).total_seconds()
+            )
 
         if job.get('owner_type') != 'user':
             self.jobs.mark_failed(
                 job_id=job_id,
                 error='Only user-owned ingest jobs are supported by worker',
+            )
+            self._observe_terminal_metrics(
+                status='failed',
+                created_at=created_at,
+                started_at=processing_started_at,
+                started_perf=started_perf,
             )
             return
 
@@ -45,6 +64,12 @@ class IngestWorker:
             self.jobs.mark_failed(
                 job_id=job_id,
                 error='Ingest job payload is incomplete',
+            )
+            self._observe_terminal_metrics(
+                status='failed',
+                created_at=created_at,
+                started_at=processing_started_at,
+                started_perf=started_perf,
             )
             return
 
@@ -82,6 +107,12 @@ class IngestWorker:
                 source_path=job.get('source_path') or file_row.get('filename'),
             )
             self.jobs.mark_completed(job_id=job_id)
+            self._observe_terminal_metrics(
+                status='completed',
+                created_at=created_at,
+                started_at=processing_started_at,
+                started_perf=started_perf,
+            )
             return
         except HTTPException as exc:
             last_error = f'HTTP {exc.status_code}: {exc.detail}'
@@ -94,6 +125,12 @@ class IngestWorker:
                 reason=f'Max attempts reached ({attempt})',
             )
             self.jobs.mark_failed(job_id=job_id, error=last_error)
+            self._observe_terminal_metrics(
+                status='failed',
+                created_at=created_at,
+                started_at=processing_started_at,
+                started_perf=started_perf,
+            )
             return
 
         backoff_seconds = min(
@@ -108,3 +145,41 @@ class IngestWorker:
             error=last_error,
             next_retry_at=next_retry_at,
         )
+        observe_ingest_processing_duration(
+            status='retry_scheduled',
+            duration_seconds=perf_counter() - started_perf,
+        )
+
+    def _observe_terminal_metrics(
+        self,
+        *,
+        status: str,
+        created_at: datetime | None,
+        started_at: datetime,
+        started_perf: float,
+    ) -> None:
+        """Observe processing and end-to-end latency for terminal outcomes."""
+        observe_ingest_processing_duration(
+            status=status,
+            duration_seconds=perf_counter() - started_perf,
+        )
+        if created_at is not None:
+            observe_ingest_end_to_end_latency(
+                status=status,
+                duration_seconds=(
+                    datetime.now(timezone.utc) - created_at
+                ).total_seconds(),
+            )
+
+    def _parse_dt(self, value: object) -> datetime | None:
+        """Parse ISO timestamp from job payload."""
+        if not value or not isinstance(value, str):
+            return None
+        try:
+            normalized = value.replace('Z', '+00:00')
+            dt = datetime.fromisoformat(normalized)
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except ValueError:
+            return None

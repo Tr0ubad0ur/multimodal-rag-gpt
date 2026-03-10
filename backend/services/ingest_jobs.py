@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -11,6 +12,8 @@ from backend.monitoring.metrics import (
 )
 from backend.utils.supabase_client import get_supabase_client
 
+logger = logging.getLogger(__name__)
+
 
 class IngestJobsService:
     """Track ingest lifecycle in Supabase, fallback to no-op when unavailable."""
@@ -20,6 +23,9 @@ class IngestJobsService:
         try:
             self.supabase = get_supabase_client(role='service')
         except Exception:
+            logger.exception(
+                'Failed to initialize Supabase client for ingest jobs'
+            )
             self.supabase = None
 
     def create_job(
@@ -63,6 +69,17 @@ class IngestJobsService:
             observe_ingest_job_event('create', 'ok')
             return data[0].get('id')
         except Exception:
+            logger.exception(
+                'Failed to create ingest job',
+                extra={
+                    'owner_type': owner_type,
+                    'owner_id': owner_id,
+                    'user_id': user_id,
+                    'file_id': file_id,
+                    'upload_filename': filename,
+                    'mime': mime,
+                },
+            )
             observe_ingest_job_event('create', 'error')
             return None
 
@@ -96,6 +113,10 @@ class IngestJobsService:
             resp = query.execute()
             return getattr(resp, 'data', None) or []
         except Exception:
+            logger.exception(
+                'Failed to list ingest jobs',
+                extra={'user_id': user_id, 'status': status, 'limit': limit},
+            )
             return []
 
     def list_jobs_for_file(
@@ -120,6 +141,10 @@ class IngestJobsService:
             )
             return getattr(resp, 'data', None) or []
         except Exception:
+            logger.exception(
+                'Failed to list ingest jobs for file',
+                extra={'user_id': user_id, 'file_id': file_id, 'limit': limit},
+            )
             return []
 
     def list_jobs_admin(
@@ -145,6 +170,10 @@ class IngestJobsService:
             resp = query.execute()
             return getattr(resp, 'data', None) or []
         except Exception:
+            logger.exception(
+                'Failed to list ingest jobs for admin',
+                extra={'status': status, 'limit': limit, 'user_id': user_id},
+            )
             return []
 
     def list_queued_jobs(self, *, limit: int = 20) -> list[dict[str, Any]]:
@@ -163,6 +192,7 @@ class IngestJobsService:
             )
             return getattr(resp, 'data', None) or []
         except Exception:
+            logger.exception('Failed to list queued ingest jobs')
             return []
 
     def claim_jobs(
@@ -186,6 +216,14 @@ class IngestJobsService:
             ).execute()
             return getattr(resp, 'data', None) or []
         except Exception:
+            logger.exception(
+                'Failed to claim ingest jobs',
+                extra={
+                    'worker_id': worker_id,
+                    'batch_size': batch_size,
+                    'lock_seconds': lock_seconds,
+                },
+            )
             # Graceful fallback for environments without migration applied yet.
             return self.list_queued_jobs(limit=batch_size)
 

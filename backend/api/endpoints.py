@@ -15,8 +15,9 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from backend.core.embeddings import (
     image_embedding_from_path,
@@ -24,6 +25,7 @@ from backend.core.embeddings import (
     video_embedding_from_path,
 )
 from backend.core.multimodal_rag import LocalRAG
+from backend.services.admin_audit import AdminAuditService
 from backend.services.admin_rate_limiter import AdminRateLimiter
 from backend.services.data_consistency import DataConsistencyService
 from backend.services.ingest import IngestService
@@ -42,6 +44,7 @@ OPTIONAL_UPLOAD_FILE = File(default=None)
 REQUIRED_UPLOAD_FILES = File(...)
 OPTIONAL_RELATIVE_PATHS = Form(default=None)
 _ADMIN_RATE_LIMITER = AdminRateLimiter()
+_ADMIN_AUDIT = AdminAuditService()
 _REQUEST_RATE_LIMITER = RequestRateLimiter()
 
 DEFAULT_MAX_FILES_PER_USER = 2000
@@ -53,23 +56,42 @@ DEFAULT_UPLOAD_RATE_LIMIT_PER_MINUTE_AUTH = 60
 DEFAULT_UPLOAD_RATE_LIMIT_PER_MINUTE_GUEST = 20
 
 
+def _api_error(
+    *,
+    status_code: int,
+    detail: str,
+    error_code: str,
+    **extra: Any,
+) -> HTTPException:
+    """Build API error with stable frontend-facing error code."""
+    payload: dict[str, Any] = {
+        'detail': detail,
+        'error_code': error_code,
+    }
+    payload.update(extra)
+    return HTTPException(status_code=status_code, detail=payload)
+
+
 def _to_auth_http_exception(exc: Exception) -> HTTPException:
     """Map Supabase auth exceptions to user-facing HTTP errors."""
     message = str(exc)
     normalized = message.lower()
     if 'invalid login credentials' in normalized:
-        return HTTPException(
+        return _api_error(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Invalid email or password',
+            error_code='invalid_email_or_password',
         )
     if 'user already registered' in normalized:
-        return HTTPException(
+        return _api_error(
             status_code=status.HTTP_409_CONFLICT,
             detail='User already registered',
+            error_code='user_already_registered',
         )
-    return HTTPException(
+    return _api_error(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail=message or 'Authentication failed',
+        error_code='authentication_failed',
     )
 
 
@@ -212,9 +234,10 @@ def _serialize(obj):
 def get_access_token(authorization: str = Header(None)) -> str:
     """Extract bearer token from Authorization header."""
     if not authorization or not authorization.startswith('Bearer '):
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Missing or invalid Authorization header',
+            error_code='missing_or_invalid_authorization_header',
         )
     return authorization.split(' ', 1)[1].strip()
 
@@ -223,14 +246,16 @@ def get_admin_access(x_admin_key: str = Header(default='')) -> bool:
     """Protect admin-only endpoints with static admin key."""
     admin_key = (os.getenv('ADMIN_API_KEY') or '').strip()
     if not admin_key:
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail='Admin API is not configured',
+            error_code='admin_api_not_configured',
         )
     if x_admin_key != admin_key:
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_403_FORBIDDEN,
             detail='Invalid admin key',
+            error_code='invalid_admin_key',
         )
     _enforce_admin_rate_limit()
     return True
@@ -243,10 +268,27 @@ def _enforce_admin_rate_limit() -> None:
         limit=limit,
         window_seconds=60,
     ):
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail='Admin rate limit exceeded',
+            error_code='admin_rate_limit_exceeded',
         )
+
+
+def _audit_admin_action(
+    *,
+    request: Request,
+    action: str,
+    details: dict[str, Any] | None = None,
+) -> None:
+    """Persist audit event for an admin API action."""
+    _ADMIN_AUDIT.log_event(
+        action=action,
+        actor='admin_api_key',
+        request_path=request.url.path,
+        ip_address=request.client.host if request.client else None,
+        details=details,
+    )
 
 
 def _env_int(name: str, default: int, *, min_value: int = 1) -> int:
@@ -256,9 +298,11 @@ def _env_int(name: str, default: int, *, min_value: int = 1) -> int:
     try:
         value = int(raw)
     except ValueError as exc:
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f'Invalid integer for {name}',
+            error_code='invalid_runtime_integer',
+            config_key=name,
         ) from exc
     return max(min_value, value)
 
@@ -278,9 +322,10 @@ def _enforce_request_rate_limit(
         limit=limit,
         window_seconds=60,
     ):
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=message,
+            error_code=message.strip().lower().replace(' ', '_'),
         )
 
 
@@ -298,14 +343,16 @@ def _enforce_quota_capacity(
         DEFAULT_MAX_STORAGE_BYTES_PER_USER,
     )
     if total_files_after > max_files:
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail='User file quota exceeded',
+            error_code='user_file_quota_exceeded',
         )
     if total_size_after > max_storage:
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail='User storage quota exceeded',
+            error_code='user_storage_quota_exceeded',
         )
 
 
@@ -319,9 +366,10 @@ def get_current_user(token: str = Depends(get_access_token)) -> dict:
         user = None
 
     if user is None:
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail='Invalid or expired token',
+            error_code='invalid_or_expired_token',
         )
     return _serialize(user)
 
@@ -479,7 +527,10 @@ def _normalize_relative_path(relative_path: str, fallback_name: str) -> str:
     if not parts or any(part == '..' for part in parts):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f'Invalid relative path: {relative_path!r}',
+            detail={
+                'detail': f'Invalid relative path: {relative_path!r}',
+                'error_code': 'invalid_relative_path',
+            },
         )
     return '/'.join(parts)
 
@@ -496,7 +547,10 @@ async def _parse_auth_request(
         if not isinstance(payload, dict):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail='JSON body must be an object',
+                detail={
+                    'detail': 'JSON body must be an object',
+                    'error_code': 'json_body_must_be_object',
+                },
             )
         email = (
             payload.get('email')
@@ -508,7 +562,10 @@ async def _parse_auth_request(
         email = email_form
         password = password_form
 
-    return AuthRequest(email=email, password=password)
+    try:
+        return AuthRequest(email=email, password=password)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
 
 
 async def _parse_query_request(
@@ -529,9 +586,15 @@ async def _parse_query_request(
         if not isinstance(payload, dict):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail='JSON body must be an object',
+                detail={
+                    'detail': 'JSON body must be an object',
+                    'error_code': 'json_body_must_be_object',
+                },
             )
-        return QueryRequest(**payload)
+        try:
+            return QueryRequest(**payload)
+        except ValidationError as exc:
+            raise RequestValidationError(exc.errors()) from exc
 
     folder_ids = []
     if folder_ids_form:
@@ -552,7 +615,10 @@ async def _parse_query_request(
         'folder_ids': folder_ids,
         'file_ids': file_ids,
     }
-    return QueryRequest(**payload)
+    try:
+        return QueryRequest(**payload)
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from exc
 
 
 def _resolve_attachment(
@@ -569,7 +635,10 @@ def _resolve_attachment(
     if not data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail='attachment_id not found',
+            detail={
+                'detail': 'attachment_id not found',
+                'error_code': 'attachment_id_not_found',
+            },
         )
     return data[0]
 
@@ -853,18 +922,20 @@ async def upload_folder_files(
 ) -> dict:
     """Upload multiple files and recreate provided folder structure in KB."""
     if not files:
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='At least one file is required',
+            error_code='at_least_one_file_is_required',
         )
     max_folder_upload_files = _env_int(
         'MAX_FILES_PER_FOLDER_UPLOAD',
         DEFAULT_MAX_FILES_PER_FOLDER_UPLOAD,
     )
     if len(files) > max_folder_upload_files:
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail='Too many files in one folder upload request',
+            error_code='too_many_files_in_one_folder_upload_request',
         )
     upload_limit = _env_int(
         'UPLOAD_RATE_LIMIT_PER_MINUTE_AUTH',
@@ -877,9 +948,10 @@ async def upload_folder_files(
     )
 
     if relative_paths is not None and len(relative_paths) != len(files):
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='relative_paths length must match files length',
+            error_code='relative_paths_length_must_match_files_length',
         )
 
     kb = _kb_service()
@@ -1408,9 +1480,10 @@ def get_ingest_job(
     jobs = _ingest_jobs_service()
     job = jobs.get_job(job_id=job_id, user_id=user['id'])
     if not job:
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Ingest job not found',
+            error_code='ingest_job_not_found',
         )
     return {'job': job}
 
@@ -1437,9 +1510,10 @@ def get_ingest_dlq_item(
     jobs = _ingest_jobs_service()
     item = jobs.get_dlq_item(dlq_id=dlq_id, user_id=user['id'])
     if not item:
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Ingest DLQ item not found',
+            error_code='ingest_dlq_item_not_found',
         )
     return {'item': item}
 
@@ -1454,9 +1528,10 @@ def requeue_ingest_dlq_item(
     jobs = _ingest_jobs_service()
     job = jobs.requeue_from_dlq(dlq_id=dlq_id, user_id=user['id'])
     if not job:
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Ingest DLQ item not found or cannot be requeued',
+            error_code='ingest_dlq_item_not_requeueable',
         )
 
     worker = _ingest_worker()
@@ -1478,19 +1553,22 @@ def retry_ingest_job(
     jobs = _ingest_jobs_service()
     job = jobs.get_job(job_id=job_id, user_id=user['id'])
     if not job:
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_404_NOT_FOUND,
             detail='Ingest job not found',
+            error_code='ingest_job_not_found',
         )
     if job.get('owner_type') != 'user':
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Only user-owned jobs can be retried',
+            error_code='only_user_owned_jobs_can_be_retried',
         )
     if job.get('status') != 'failed':
-        raise HTTPException(
+        raise _api_error(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail='Only failed jobs can be retried',
+            error_code='only_failed_jobs_can_be_retried',
         )
 
     jobs.mark_queued(job_id=job_id)
@@ -1507,6 +1585,7 @@ def retry_ingest_job(
 
 @router.post('/admin/ingest/replay')
 def admin_replay_ingest_jobs(
+    request: Request,
     background_tasks: BackgroundTasks,
     status_filter: str = 'failed',
     limit: int = 50,
@@ -1544,6 +1623,17 @@ def admin_replay_ingest_jobs(
         replayed_ids.append(job_id)
 
     jobs.refresh_depth_metrics()
+    _audit_admin_action(
+        request=request,
+        action='admin_ingest_replay',
+        details={
+            'status_filter': status_filter,
+            'limit': limit,
+            'user_id': user_id,
+            'selected': len(selected),
+            'replayed': len(replayed_ids),
+        },
+    )
     return {
         'selected': len(selected),
         'replayed': len(replayed_ids),
@@ -1553,6 +1643,7 @@ def admin_replay_ingest_jobs(
 
 @router.post('/admin/ingest/purge')
 def admin_purge_ingest_data(
+    request: Request,
     older_than_hours: int = 24 * 7,
     statuses: str = 'completed,failed',
     purge_dlq: bool = True,
@@ -1584,11 +1675,24 @@ def admin_purge_ingest_data(
             limit=max(1, min(limit, 2000)),
         )
     jobs.refresh_depth_metrics()
+    _audit_admin_action(
+        request=request,
+        action='admin_ingest_purge',
+        details={
+            'older_than_hours': older_than_hours,
+            'statuses': parsed_statuses,
+            'purge_dlq': purge_dlq,
+            'limit': limit,
+            'purged_jobs': purged_jobs,
+            'purged_dlq': purged_dlq,
+        },
+    )
     return {'purged_jobs': purged_jobs, 'purged_dlq': purged_dlq}
 
 
 @router.post('/admin/consistency/reindex')
 def admin_reindex_files(
+    request: Request,
     background_tasks: BackgroundTasks,
     user_id: str | None = None,
     limit: int = 100,
@@ -1614,11 +1718,23 @@ def admin_reindex_files(
             job_id=job_id,
             user_id=owner_user_id,
         )
+    _audit_admin_action(
+        request=request,
+        action='admin_consistency_reindex',
+        details={
+            'user_id': user_id,
+            'limit': limit,
+            'only_missing_vectors': only_missing_vectors,
+            'selected': result.get('selected'),
+            'scheduled': result.get('scheduled'),
+        },
+    )
     return result
 
 
 @router.post('/admin/consistency/cleanup')
 def admin_cleanup_consistency(
+    request: Request,
     dry_run: bool = True,
     cleanup_missing_storage_records: bool = True,
     cleanup_orphan_uploads: bool = True,
@@ -1651,6 +1767,18 @@ def admin_cleanup_consistency(
             limit_orphan_file_ids=max(1, min(limit, 5_000)),
         )
 
+    _audit_admin_action(
+        request=request,
+        action='admin_consistency_cleanup',
+        details={
+            'dry_run': dry_run,
+            'cleanup_missing_storage_records': cleanup_missing_storage_records,
+            'cleanup_orphan_uploads': cleanup_orphan_uploads,
+            'cleanup_orphan_vectors': cleanup_orphan_vectors,
+            'uploads_min_age_seconds': uploads_min_age_seconds,
+            'limit': limit,
+        },
+    )
     return report
 
 

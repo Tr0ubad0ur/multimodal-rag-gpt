@@ -1,11 +1,13 @@
 import asyncio
 import logging
 import os
+import re
 import time
 from contextlib import asynccontextmanager
 from typing import Dict
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -18,6 +20,34 @@ from backend.utils.log_config import setup_logging
 
 setup_logging()
 logger = logging.getLogger(__name__)
+
+
+def _normalize_error_code(detail: object, *, fallback: str) -> str:
+    """Convert error detail into a stable snake_case error code."""
+    if isinstance(detail, dict):
+        raw = detail.get('error_code') or detail.get('code')
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+        detail = detail.get('detail') or detail.get('message') or fallback
+    text = str(detail or fallback).strip().lower()
+    normalized = re.sub(r'[^a-z0-9]+', '_', text).strip('_')
+    return normalized or fallback
+
+
+def _format_validation_errors(
+    errors: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    """Return compact validation error details for frontend consumption."""
+    formatted: list[dict[str, object]] = []
+    for error in errors:
+        formatted.append(
+            {
+                'field': '.'.join(str(part) for part in error.get('loc', [])),
+                'message': str(error.get('msg', 'Invalid value')),
+                'code': str(error.get('type', 'validation_error')),
+            }
+        )
+    return formatted
 
 
 @asynccontextmanager
@@ -111,10 +141,52 @@ def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
         status_code=400,
         content={
             'detail': str(exc),
+            'error_code': 'bad_request',
             'path': request.url.path,
             'error_type': 'ValueError',
         },
     )
+
+
+@app.exception_handler(RequestValidationError)
+def request_validation_error_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """Return a stable validation error contract for invalid request payloads."""
+    return JSONResponse(
+        status_code=422,
+        content={
+            'detail': 'Request validation failed',
+            'error_code': 'validation_error',
+            'path': request.url.path,
+            'status_code': 422,
+            'errors': _format_validation_errors(exc.errors()),
+        },
+    )
+
+
+@app.exception_handler(HTTPException)
+def http_exception_handler(
+    request: Request, exc: HTTPException
+) -> JSONResponse:
+    """Return a stable JSON error contract for expected API errors."""
+    detail = exc.detail
+    payload: dict[str, object]
+    if isinstance(detail, dict):
+        payload = dict(detail)
+        payload.setdefault(
+            'detail',
+            payload.get('message') or 'Request failed',
+        )
+    else:
+        payload = {'detail': str(detail)}
+    payload.setdefault(
+        'error_code',
+        _normalize_error_code(payload.get('detail'), fallback='http_error'),
+    )
+    payload['path'] = request.url.path
+    payload['status_code'] = exc.status_code
+    return JSONResponse(status_code=exc.status_code, content=payload)
 
 
 @app.exception_handler(Exception)
@@ -129,6 +201,7 @@ def unhandled_exception_handler(
         status_code=500,
         content={
             'detail': 'Internal server error',
+            'error_code': 'internal_server_error',
             'path': request.url.path,
             'error_type': exc.__class__.__name__,
         },

@@ -107,6 +107,15 @@ uv run python scripts/check_model_gpu.py --model Qwen/Qwen2.5-VL-7B-Instruct
 
 Полный порядок действий вынесен в [RUNBOOK_GPU.md](RUNBOOK_GPU.md).
 
+Production release gate и env/topology checklist:
+
+- [PRODUCTION_CHECKLIST.md](PRODUCTION_CHECKLIST.md)
+- [.env.production.example](.env.production.example)
+- [DATA_CONSISTENCY_POLICY.md](DATA_CONSISTENCY_POLICY.md)
+- [ADMIN_API_KEY_ROTATION.md](ADMIN_API_KEY_ROTATION.md)
+- [FRONTEND_API_CONTRACT.md](FRONTEND_API_CONTRACT.md)
+- [LIMITS_POLICY.md](LIMITS_POLICY.md)
+
 ```bash
 # 1) Поднять Qdrant
 docker compose -f docker-compose.qdrant.yml up -d
