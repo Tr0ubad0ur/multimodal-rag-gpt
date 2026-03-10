@@ -1,0 +1,36 @@
+FROM python:3.13-slim
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app \
+    UV_LINK_MODE=copy \
+    HF_HOME=/models/hf-cache \
+    TRANSFORMERS_CACHE=/models/hf-cache \
+    HUGGINGFACE_HUB_CACHE=/models/hf-cache \
+    TORCH_HOME=/models/torch-cache
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    ffmpeg \
+    git \
+    libgl1 \
+    libglib2.0-0 \
+    libsndfile1 \
+    tesseract-ocr \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:0.8.17 /uv /uvx /bin/
+
+COPY pyproject.toml uv.lock README.md /app/
+RUN uv sync --frozen --no-dev
+
+COPY backend /app/backend
+COPY scripts /app/scripts
+COPY supabase /app/supabase
+
+EXPOSE 8000 8010
+
+CMD ["uv", "run", "uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -1,7 +1,7 @@
 import time
 from typing import Any, Dict, List
 
-from backend.core.embeddings import text_embedding
+from backend.core.embeddings import multimodal_text_embedding, text_embedding
 from backend.monitoring.metrics import observe_rag_query
 from backend.utils.config_handler import Config
 from backend.utils.qdrant_handler import QdrantHandler
@@ -21,6 +21,16 @@ class LocalRAG:
             collection_name=Config.qdrant_text_collection,
             vector_size=Config.text_vector_size,
         )
+        self.image_client = QdrantHandler(
+            url=Config.qdrant_url,
+            collection_name=Config.qdrant_image_collection,
+            vector_size=Config.image_vector_size,
+        )
+        self.video_client = QdrantHandler(
+            url=Config.qdrant_url,
+            collection_name=Config.qdrant_video_collection,
+            vector_size=Config.video_vector_size,
+        )
 
     def retrieve_data(
         self,
@@ -29,7 +39,7 @@ class LocalRAG:
         user_id: str | None = None,
         folder_scopes: list[str] | None = None,
         file_ids: list[str] | None = None,
-    ) -> List[Dict[str, str]]:
+    ) -> List[Dict[str, Any]]:
         """Retrieve top-K most similar documents from Qdrant for a given query.
 
         Args:
@@ -44,26 +54,125 @@ class LocalRAG:
                 - 'text' (str): The text content of the document chunk.
                 - 'source' (str): Source file path or metadata for the chunk.
         """
-        query_vector = text_embedding(query)
-        results = self.client.search(
-            query_vector=query_vector,
+        text_results = self.client.search(
+            query_vector=text_embedding(query),
+            top_k=top_k,
+            user_id=user_id,
+            folder_scopes=folder_scopes,
+            file_ids=file_ids,
+        )
+        multimodal_query_vector = multimodal_text_embedding(query)
+        image_results = self.image_client.search(
+            query_vector=multimodal_query_vector,
+            top_k=top_k,
+            user_id=user_id,
+            folder_scopes=folder_scopes,
+            file_ids=file_ids,
+        )
+        video_results = self.video_client.search(
+            query_vector=multimodal_query_vector,
             top_k=top_k,
             user_id=user_id,
             folder_scopes=folder_scopes,
             file_ids=file_ids,
         )
 
-        docs = []
+        results = self._merge_results(
+            text_results=text_results,
+            image_results=image_results,
+            video_results=video_results,
+            top_k=top_k,
+        )
+
+        docs: list[dict[str, Any]] = []
         for r in results:
             payload = r.get('payload', {})
             docs.append(
                 {
                     'text': payload.get('text', ''),
                     'source': payload.get('source', ''),
+                    'file_id': payload.get('file_id'),
+                    'modality': payload.get('modality', 'text'),
+                    'score': r.get('score'),
+                    'preview_ref': self._build_preview_ref(payload),
                 }
             )
 
         return docs
+
+    def _merge_results(
+        self,
+        *,
+        text_results: list[dict[str, Any]],
+        image_results: list[dict[str, Any]],
+        video_results: list[dict[str, Any]],
+        top_k: int,
+    ) -> list[dict[str, Any]]:
+        """Merge modality-specific candidates with reciprocal rank fusion."""
+        by_id: dict[str, dict[str, Any]] = {}
+        for results in (text_results, image_results, video_results):
+            for rank, item in enumerate(results, start=1):
+                payload = item.get('payload', {}) or {}
+                file_id = str(payload.get('file_id') or item.get('id') or '')
+                if not file_id:
+                    continue
+                entry = by_id.setdefault(
+                    file_id,
+                    {
+                        'id': item.get('id'),
+                        'payload': payload,
+                        'score': 0.0,
+                        'raw_score': item.get('score'),
+                    },
+                )
+                entry['score'] += 1.0 / (60.0 + rank)
+                raw_score = item.get('score')
+                if raw_score is not None:
+                    prev_raw = entry.get('raw_score')
+                    if prev_raw is None or raw_score > prev_raw:
+                        entry['raw_score'] = raw_score
+                if payload.get('modality') == 'text':
+                    entry['payload'] = payload
+
+        merged = sorted(
+            by_id.values(),
+            key=lambda item: float(item.get('score') or 0.0),
+            reverse=True,
+        )
+        return merged[:top_k]
+
+    def _build_preview_ref(self, payload: dict[str, Any]) -> str | None:
+        """Return a stable preview reference for a retrieved source."""
+        file_id = payload.get('file_id')
+        if file_id:
+            return f'/files/{file_id}/download'
+        return payload.get('source_path') or payload.get('source')
+
+    def _build_used_sources(
+        self, docs: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Normalize retrieved docs into frontend-facing source descriptors."""
+        seen: set[tuple[str | None, str | None, str | None]] = set()
+        used_sources: list[dict[str, Any]] = []
+        for doc in docs:
+            key = (
+                doc.get('file_id'),
+                doc.get('modality'),
+                doc.get('preview_ref'),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            used_sources.append(
+                {
+                    'file_id': doc.get('file_id'),
+                    'modality': doc.get('modality', 'text'),
+                    'score': doc.get('score'),
+                    'preview_ref': doc.get('preview_ref'),
+                    'source': doc.get('source'),
+                }
+            )
+        return used_sources
 
     def generate_answer(
         self,
@@ -96,7 +205,7 @@ class LocalRAG:
         query_type = 'multimodal' if image else 'text'
         started = time.perf_counter()
         status = 'ok'
-        docs: List[Dict[str, str]] = []
+        docs: List[Dict[str, Any]] = []
 
         try:
             from backend.core.llm import get_llm_response
@@ -112,7 +221,11 @@ class LocalRAG:
             answer_text = get_llm_response(
                 query, context=final_docs, image=image, model=model
             )
-            return {'answer': answer_text, 'retrieved_docs': final_docs}
+            return {
+                'answer': answer_text,
+                'retrieved_docs': final_docs,
+                'used_sources': self._build_used_sources(final_docs),
+            }
         except Exception:
             status = 'error'
             raise

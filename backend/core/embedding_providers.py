@@ -18,6 +18,10 @@ class EmbeddingProvider(ABC):
         """Encode text into an embedding vector."""
 
     @abstractmethod
+    def encode_multimodal_text(self, text: str) -> list[float]:
+        """Encode text into the shared image/video embedding space."""
+
+    @abstractmethod
     def encode_image(self, image: Image.Image) -> list[float]:
         """Encode image into an embedding vector."""
 
@@ -48,6 +52,10 @@ class SentenceTransformerProvider(EmbeddingProvider):
     def encode_text(self, text: str) -> list[float]:
         """Encode a text string into a dense vector."""
         return self._text_model.encode(text).tolist()
+
+    def encode_multimodal_text(self, text: str) -> list[float]:
+        """Encode text in CLIP-compatible space for image/video retrieval."""
+        return self._image_model.encode(text).tolist()
 
     def encode_image(self, image: Image.Image) -> list[float]:
         """Encode a PIL image into a dense vector."""

@@ -4,7 +4,10 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
-CONFIG_PATH = Path(__file__).resolve().parents[1] / 'backend_config.yaml'
+DEFAULT_CONFIG_PATH = (
+    Path(__file__).resolve().parents[1] / 'backend_config.yaml'
+)
+CONFIG_PATH = Path(os.getenv('BACKEND_CONFIG_PATH', DEFAULT_CONFIG_PATH))
 
 load_dotenv()
 
@@ -65,11 +68,15 @@ class Config:
     llm_max_new_tokens: int = _env_int(
         'LLM_MAX_NEW_TOKENS', _config['llm']['max_new_tokens']
     )
+    _default_llm_available_models: list[str] = list(
+        _config['llm'].get('available_models') or [llm_model_name]
+    )
     llm_available_models: list[str] = [
         model.strip()
-        for model in os.getenv('LLM_AVAILABLE_MODELS', llm_model_name).split(
-            ','
-        )
+        for model in os.getenv(
+            'LLM_AVAILABLE_MODELS',
+            ','.join(_default_llm_available_models),
+        ).split(',')
         if model.strip()
     ]
     rag_max_context_docs: int = _env_int('RAG_MAX_CONTEXT_DOCS', 4)

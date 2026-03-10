@@ -369,6 +369,7 @@ def _enqueue_ingest_job(
     effective_metadata = dict(metadata or {})
     if folder_path is not None:
         effective_metadata.setdefault('folder_path', folder_path)
+    effective_metadata.setdefault('storage_path', file_path)
     job_id = jobs.create_job(
         owner_type=owner_type,
         owner_id=owner_id,
@@ -428,6 +429,7 @@ def _ingest_with_job(
     effective_metadata = dict(metadata or {})
     if folder_path is not None:
         effective_metadata.setdefault('folder_path', folder_path)
+    effective_metadata.setdefault('storage_path', file_path)
     job_id = existing_job_id
     if job_id is None:
         job_id = jobs.create_job(
@@ -645,6 +647,10 @@ async def _prepare_attachment_data(
             {
                 'text': chunk,
                 'source': stored.filename,
+                'file_id': stored.file_id,
+                'modality': 'text',
+                'score': None,
+                'preview_ref': stored.storage_path,
             }
             for chunk in attachment_context_chunks
         ]

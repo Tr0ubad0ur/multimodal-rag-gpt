@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 
+from backend.services.guest_cleanup import GuestCleanupService
 from backend.services.ingest_jobs import IngestJobsService
 from backend.services.ingest_worker import IngestWorker
 
@@ -30,6 +32,14 @@ class IngestPoller:
         self.worker_id = f'ingest-poller-{uuid.uuid4()}'
         self.jobs = IngestJobsService()
         self.worker = IngestWorker(max_attempts=3)
+        self.guest_cleanup = GuestCleanupService()
+        self.guest_ttl_hours = max(
+            1, int(os.getenv('GUEST_SESSION_TTL_HOURS', '24'))
+        )
+        self.guest_cleanup_interval_seconds = max(
+            60, int(os.getenv('GUEST_CLEANUP_INTERVAL_SECONDS', '3600'))
+        )
+        self._last_guest_cleanup_monotonic = 0.0
         self._stop_event = asyncio.Event()
 
     async def run(self) -> None:
@@ -54,6 +64,7 @@ class IngestPoller:
                     lock_seconds=self.lock_seconds,
                 )
                 await self._process_claimed_jobs(claimed)
+                await self._run_guest_cleanup_if_due()
                 self.jobs.refresh_depth_metrics()
             except Exception:
                 logger.exception('IngestPoller loop failed')
@@ -92,3 +103,22 @@ class IngestPoller:
                     logger.exception('Failed processing ingest job %s', job_id)
 
         await asyncio.gather(*(_run_one(job) for job in claimed))
+
+    async def _run_guest_cleanup_if_due(self) -> None:
+        now = asyncio.get_running_loop().time()
+        if (
+            now - self._last_guest_cleanup_monotonic
+            < self.guest_cleanup_interval_seconds
+        ):
+            return
+        self._last_guest_cleanup_monotonic = now
+        try:
+            report = await asyncio.to_thread(
+                self.guest_cleanup.cleanup_expired,
+                ttl_hours=self.guest_ttl_hours,
+            )
+            deleted_total = sum(int(value) for value in report.values())
+            if deleted_total:
+                logger.info('Guest TTL cleanup removed artifacts: %s', report)
+        except Exception:
+            logger.exception('Guest TTL cleanup failed')

@@ -44,6 +44,30 @@ def text_embedding(
         )
 
 
+def multimodal_text_embedding(
+    text: str,
+    provider_name: str | None = None,
+) -> list[float]:
+    """Generate a query embedding in the shared image/video space."""
+    started = time.perf_counter()
+    resolved_provider = provider_name or Config.default_embedding_provider
+    status = 'ok'
+    try:
+        provider = get_provider(resolved_provider)
+        vector = provider.encode_multimodal_text(text)
+        return vector
+    except Exception:
+        status = 'error'
+        raise
+    finally:
+        observe_embedding_request(
+            modality='multimodal_text',
+            provider=resolved_provider,
+            status=status,
+            duration_seconds=time.perf_counter() - started,
+        )
+
+
 def image_embedding_from_path(
     image_path: str,
     provider_name: str | None = None,

@@ -78,6 +78,35 @@ curl -s http://localhost:8010/health/ready | jq .
 docker compose -f docker-compose.local.yml down
 ```
 
+### 3.0.1 GPU/Linux профиль через `uv`
+
+Для короткого прогона на Linux-сервере с NVIDIA GPU подготовлен отдельный профиль:
+
+```bash
+cp .env.gpu.example .env.gpu
+# заполнить секреты и URL
+
+docker compose -f docker-compose.gpu.yml build
+docker compose -f docker-compose.gpu.yml up -d
+```
+
+Проверка:
+
+```bash
+curl -s http://localhost:18000/health/ready | jq .
+curl -s http://localhost:18010/health/ready | jq .
+```
+
+Предварительная проверка среды и модели:
+
+```bash
+uv sync
+uv run python scripts/check_gpu_env.py
+uv run python scripts/check_model_gpu.py --model Qwen/Qwen2.5-VL-7B-Instruct
+```
+
+Полный порядок действий вынесен в [RUNBOOK_GPU.md](RUNBOOK_GPU.md).
+
 ```bash
 # 1) Поднять Qdrant
 docker compose -f docker-compose.qdrant.yml up -d

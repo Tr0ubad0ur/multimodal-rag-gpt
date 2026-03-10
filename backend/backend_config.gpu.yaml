@@ -9,8 +9,8 @@ qdrant:
 
 data:
   data_folder: "data/test_data"
-  chunk_size: 500
-  chunk_overlap: 50
+  chunk_size: 700
+  chunk_overlap: 100
   supported_text_extensions: [".txt", ".md"]
   supported_pdf_extensions: [".pdf"]
   supported_image_extensions: [".jpg", ".jpeg", ".png"]
@@ -20,9 +20,10 @@ llm:
   model_name: "Qwen/Qwen2-VL-2B-Instruct"
   available_models:
     - "Qwen/Qwen2-VL-2B-Instruct"
-    - "Qwen/Qwen3.5-9B"
+    - "Qwen/Qwen2.5-VL-7B-Instruct"
+    - "llava-hf/llava-onevision-qwen2-7b-ov-hf"
     - "openai/gpt-oss-20b"
-  max_new_tokens: 300
+  max_new_tokens: 512
 
 embeddings:
   default_provider: "sentence-transformers-default"
@@ -41,4 +42,4 @@ logging:
   log_dir: "logs"
   log_file: "app.log"
   max_bytes: 1048576
-  backup_count: 1
+  backup_count: 3

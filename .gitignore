@@ -6,6 +6,7 @@
 
 # Misс
 .env
+.env.gpu
 .venv
 .vscode/
 !.vscode/extensions.json

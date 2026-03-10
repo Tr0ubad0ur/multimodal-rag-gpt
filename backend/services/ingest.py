@@ -18,7 +18,11 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from backend.core.embeddings import text_embedding
+from backend.core.embeddings import (
+    image_embedding_from_path,
+    text_embedding,
+    video_embedding_from_path,
+)
 from backend.utils.config_handler import Config
 from backend.utils.load_data import DataLoader
 from backend.utils.qdrant_handler import QdrantHandler
@@ -48,6 +52,16 @@ class IngestService:
             url=Config.qdrant_url,
             collection_name=Config.qdrant_text_collection,
             vector_size=Config.text_vector_size,
+        )
+        self.image_client = QdrantHandler(
+            url=Config.qdrant_url,
+            collection_name=Config.qdrant_image_collection,
+            vector_size=Config.image_vector_size,
+        )
+        self.video_client = QdrantHandler(
+            url=Config.qdrant_url,
+            collection_name=Config.qdrant_video_collection,
+            vector_size=Config.video_vector_size,
         )
         self.loader = DataLoader()
 
@@ -85,6 +99,8 @@ class IngestService:
         owner_type = 'user' if user_id else 'guest'
 
         self.text_client.create_collection()
+        self.image_client.create_collection()
+        self.video_client.create_collection()
         path = Path(file_path)
 
         if mime in TEXT_MIME_TYPES:
@@ -110,6 +126,20 @@ class IngestService:
             folder_id=folder_id,
             folder_name=folder_name,
             folder_path=folder_path,
+        )
+        self._upsert_modality_vector(
+            file_id=file_id,
+            path=path,
+            filename=filename,
+            mime=mime,
+            source_path=source_path,
+            user_id=user_id,
+            guest_session_id=guest_session_id,
+            owner_type=owner_type,
+            owner_id=owner_id,
+            folder_id=folder_id,
+            folder_path=folder_path,
+            chunks=chunks,
         )
 
     def delete_vectors_for_file(self, *, file_id: str) -> None:
@@ -165,6 +195,53 @@ class IngestService:
 
     def _extract_video_chunks(self, path: Path) -> list[str]:
         return [f'Video attachment content from file: {path.name}']
+
+    def _upsert_modality_vector(
+        self,
+        *,
+        file_id: str,
+        path: Path,
+        filename: str,
+        mime: str,
+        source_path: str | None,
+        user_id: str | None,
+        guest_session_id: str | None,
+        owner_type: str,
+        owner_id: str,
+        folder_id: str | None,
+        folder_path: str | None,
+        chunks: list[str],
+    ) -> None:
+        if mime in IMAGE_MIME_TYPES:
+            self._upsert_image_vector(
+                file_id=file_id,
+                path=path,
+                filename=filename,
+                mime=mime,
+                source_path=source_path,
+                user_id=user_id,
+                guest_session_id=guest_session_id,
+                owner_type=owner_type,
+                owner_id=owner_id,
+                folder_id=folder_id,
+                folder_path=folder_path,
+                chunks=chunks,
+            )
+        elif mime in VIDEO_MIME_TYPES:
+            self._upsert_video_vector(
+                file_id=file_id,
+                path=path,
+                filename=filename,
+                mime=mime,
+                source_path=source_path,
+                user_id=user_id,
+                guest_session_id=guest_session_id,
+                owner_type=owner_type,
+                owner_id=owner_id,
+                folder_id=folder_id,
+                folder_path=folder_path,
+                chunks=chunks,
+            )
 
     def _read_docx(self, path: Path) -> str:
         try:
@@ -253,6 +330,108 @@ class IngestService:
                 collection_name=scoped_collection,
                 points=points,
             )
+
+    def _upsert_image_vector(
+        self,
+        *,
+        file_id: str,
+        path: Path,
+        filename: str,
+        mime: str,
+        source_path: str | None,
+        user_id: str | None,
+        guest_session_id: str | None,
+        owner_type: str,
+        owner_id: str,
+        folder_id: str | None,
+        folder_path: str | None,
+        chunks: list[str],
+    ) -> None:
+        vector = image_embedding_from_path(str(path))
+        if len(vector) != Config.image_vector_size:
+            raise ValueError(
+                f'Embedding dimension mismatch: expected {Config.image_vector_size}, got {len(vector)}'
+            )
+        summary_text = '\n'.join(
+            chunk.strip() for chunk in chunks if chunk.strip()
+        )
+        payload = {
+            'text': summary_text or f'Image attachment: {filename}',
+            'source': str(path),
+            'source_path': source_path,
+            'filename': filename,
+            'mime': mime,
+            'user_id': user_id,
+            'guest_session_id': guest_session_id,
+            'owner_type': owner_type,
+            'owner_id': owner_id,
+            'folder_id': folder_id,
+            'folder_path': folder_path,
+            'folder_scope': folder_id or ROOT_SCOPE,
+            'file_id': file_id,
+            'modality': 'image',
+            'ingested_at': datetime.now(timezone.utc).isoformat(),
+        }
+        point = PointStruct(
+            id=str(uuid.uuid5(uuid.NAMESPACE_URL, f'{file_id}:image')),
+            vector=vector,
+            payload=payload,
+        )
+        self.image_client.client.upsert(
+            collection_name=self.image_client.collection_name,
+            points=[point],
+        )
+
+    def _upsert_video_vector(
+        self,
+        *,
+        file_id: str,
+        path: Path,
+        filename: str,
+        mime: str,
+        source_path: str | None,
+        user_id: str | None,
+        guest_session_id: str | None,
+        owner_type: str,
+        owner_id: str,
+        folder_id: str | None,
+        folder_path: str | None,
+        chunks: list[str],
+    ) -> None:
+        vector = video_embedding_from_path(str(path))
+        if len(vector) != Config.video_vector_size:
+            raise ValueError(
+                f'Embedding dimension mismatch: expected {Config.video_vector_size}, got {len(vector)}'
+            )
+        summary_text = '\n'.join(
+            chunk.strip() for chunk in chunks if chunk.strip()
+        )
+        payload = {
+            'text': summary_text or f'Video attachment: {filename}',
+            'source': str(path),
+            'source_path': source_path,
+            'filename': filename,
+            'mime': mime,
+            'user_id': user_id,
+            'guest_session_id': guest_session_id,
+            'owner_type': owner_type,
+            'owner_id': owner_id,
+            'folder_id': folder_id,
+            'folder_path': folder_path,
+            'folder_scope': folder_id or ROOT_SCOPE,
+            'file_id': file_id,
+            'modality': 'video',
+            'ingested_at': datetime.now(timezone.utc).isoformat(),
+        }
+        point = PointStruct(
+            id=str(uuid.uuid5(uuid.NAMESPACE_URL, f'{file_id}:video')),
+            vector=vector,
+            payload=payload,
+        )
+        self.video_client.client.upsert(
+            collection_name=self.video_client.collection_name,
+            points=[point],
+        )
 
     def _ensure_collection(self, collection_name: str) -> None:
         try:

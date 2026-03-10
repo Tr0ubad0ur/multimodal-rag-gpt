@@ -1,16 +1,81 @@
 import logging
+import os
+from abc import ABC, abstractmethod
 from typing import Any, Dict, List
 
 import requests
 import torch
 from PIL import Image
-from transformers import AutoProcessor
+from transformers import AutoProcessor, AutoTokenizer, pipeline
 
 from backend.utils.config_handler import Config
 
 logger = logging.getLogger(__name__)
 
-MODEL_NAME = Config.llm_model_name
+_BACKENDS: dict[str, 'BaseLLMBackend'] = {}
+
+
+def _default_torch_dtype() -> torch.dtype:
+    """Pick a conservative dtype for the current runtime."""
+    if torch.cuda.is_available():
+        return torch.float16
+    if torch.backends.mps.is_available():
+        return torch.float16
+    return torch.float32
+
+
+def _resolve_torch_dtype() -> torch.dtype:
+    """Resolve target dtype from env or runtime defaults."""
+    raw = os.getenv('LLM_TORCH_DTYPE', 'auto').strip().lower()
+    if raw in {'', 'auto'}:
+        return _default_torch_dtype()
+    mapping = {
+        'float16': torch.float16,
+        'fp16': torch.float16,
+        'bfloat16': torch.bfloat16,
+        'bf16': torch.bfloat16,
+        'float32': torch.float32,
+        'fp32': torch.float32,
+    }
+    return mapping.get(raw, _default_torch_dtype())
+
+
+def _resolve_device_map() -> str:
+    """Resolve device_map override for model loading."""
+    return os.getenv('LLM_DEVICE_MAP', 'auto').strip() or 'auto'
+
+
+def _resolve_attn_implementation() -> str | None:
+    """Resolve attention implementation override."""
+    raw = os.getenv('LLM_ATTN_IMPLEMENTATION', '').strip().lower()
+    if not raw or raw == 'auto':
+        if torch.cuda.is_available():
+            return 'sdpa'
+        return None
+    return raw
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """Read a boolean env flag."""
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _build_common_model_kwargs() -> dict[str, Any]:
+    """Build common model loading kwargs for large GPU-hosted models."""
+    kwargs: dict[str, Any] = {
+        'torch_dtype': _resolve_torch_dtype(),
+        'device_map': _resolve_device_map(),
+        'low_cpu_mem_usage': _env_flag('LLM_LOW_CPU_MEM_USAGE', True),
+    }
+    attn_implementation = _resolve_attn_implementation()
+    if attn_implementation:
+        kwargs['attn_implementation'] = attn_implementation
+    if _env_flag('LLM_LOAD_IN_4BIT', False):
+        kwargs['load_in_4bit'] = True
+    return kwargs
 
 
 def _resolve_auto_model_class():
@@ -33,72 +98,76 @@ def _resolve_auto_model_class():
         ) from exc
 
 
-class QwenVisionLLM:
-    """Wrapper for a multimodal Vision-Text LLM (Qwen2-VL) to generate text from images and prompts.
+class BaseLLMBackend(ABC):
+    """Common interface for text and multimodal backends."""
 
-    Attributes:
-        processor: Processor for preparing images and text for the model.
-        model: The loaded Vision2Seq model for multimodal inference.
-    """
+    supports_image: bool = False
 
-    def __init__(self) -> None:
-        """Initialize the Vision LLM, loading the model and processor."""
-        logger.info(f'Loading {Config.llm_model_name}...')
-        self.processor = AutoProcessor.from_pretrained(MODEL_NAME)
+    @abstractmethod
+    def generate(
+        self,
+        prompt: str,
+        context: list[dict[str, Any]] | None = None,
+        image: str | Image.Image | None = None,
+    ) -> str:
+        """Generate answer for prompt and optional context/image."""
+
+
+class QwenVisionLLM(BaseLLMBackend):
+    """Vision-text backend for multimodal requests."""
+
+    supports_image = True
+
+    def __init__(self, model_name: str) -> None:
+        """Initialize the vision backend."""
+        logger.info('Loading vision model %s...', model_name)
+        self.model_name = model_name
+        self.model_kwargs = _build_common_model_kwargs()
+        self.processor = AutoProcessor.from_pretrained(model_name)
         model_cls = _resolve_auto_model_class()
         self.model = model_cls.from_pretrained(
-            MODEL_NAME,
-            torch_dtype=torch.float16
-            if torch.backends.mps.is_available()
-            else torch.float32,
-            device_map='auto',
+            model_name,
+            **self.model_kwargs,
         )
-        logger.info(f'{Config.llm_model_name} loaded successfully')
+        logger.info('Vision model %s loaded', model_name)
 
-    def build_messages(self, prompt, image=None) -> List[Dict[str, Any]]:
-        """Constructs a chat-style message payload for the model.
-
-        Args:
-            prompt (str): Text prompt to send to the model.
-            image (str or PIL.Image.Image, optional): Path, URL, or PIL Image to include in the message.
-
-        Returns:
-            list[dict]: A list of message dictionaries ready for the processor.
-        """
-        content = []
+    def build_messages(
+        self, prompt: str, image: str | Image.Image | None = None
+    ) -> List[Dict[str, Any]]:
+        """Build chat template payload for Qwen vision models."""
+        content: list[dict[str, Any]] = []
         if image is not None:
             if isinstance(image, str):
                 if image.startswith('http'):
                     response = requests.get(image, stream=True, timeout=10)
                     response.raise_for_status()
-                    img = Image.open(response.raw).convert('RGB')
+                    resolved_image = Image.open(response.raw).convert('RGB')
                 else:
-                    img = Image.open(image).convert('RGB')
+                    resolved_image = Image.open(image).convert('RGB')
             else:
-                img = image
-            content.append({'type': 'image', 'image': img})
+                resolved_image = image
+            content.append({'type': 'image', 'image': resolved_image})
         content.append({'type': 'text', 'text': prompt})
-        messages = [{'role': 'user', 'content': content}]
-        return messages
+        return [{'role': 'user', 'content': content}]
 
-    def generate(self, prompt, context=None, image=None) -> str:
-        """Generate a text response using the Vision LLM, optionally with context and/or image.
-
-        Args:
-            prompt (str): The main text prompt or question.
-            context (list[dict], optional): A list of retrieved documents for RAG context. Each dict must contain 'text'.
-            image (str or PIL.Image.Image, optional): Path, URL, or PIL image to include in generation.
-
-        Returns:
-            str: The generated text output from the model.
-        """
+    def generate(
+        self,
+        prompt: str,
+        context: list[dict[str, Any]] | None = None,
+        image: str | Image.Image | None = None,
+    ) -> str:
+        """Generate answer with optional image input."""
         full_prompt = prompt
         if context:
-            context_text = '\n'.join([d['text'] for d in context])
-            full_prompt = f'Используя следующий контекст:\n{context_text}\n\nОтветьте на вопрос:\n{prompt}'
+            context_text = '\n'.join(item.get('text', '') for item in context)
+            full_prompt = (
+                'Используя следующий контекст:\n'
+                f'{context_text}\n\n'
+                'Ответьте на вопрос:\n'
+                f'{prompt}'
+            )
 
         messages = self.build_messages(full_prompt, image)
-
         inputs = self.processor.apply_chat_template(
             messages,
             add_generation_prompt=True,
@@ -114,40 +183,168 @@ class QwenVisionLLM:
                 do_sample=False,
             )
 
-        result = self.processor.decode(
+        return self.processor.decode(
             output[0][inputs['input_ids'].shape[-1] :],
             skip_special_tokens=True,
         )
-        return result
 
 
-qwen_llm = QwenVisionLLM()
+class LlavaOneVisionBackend(BaseLLMBackend):
+    """LLaVA-OneVision backend for image-text-to-text requests."""
+
+    supports_image = True
+
+    def __init__(self, model_name: str) -> None:
+        """Initialize a Llava-OneVision model with GPU-friendly kwargs."""
+        from transformers import LlavaOnevisionForConditionalGeneration
+
+        logger.info('Loading Llava-OneVision model %s...', model_name)
+        self.model_name = model_name
+        self.model_kwargs = _build_common_model_kwargs()
+        self.processor = AutoProcessor.from_pretrained(model_name)
+        self.model = LlavaOnevisionForConditionalGeneration.from_pretrained(
+            model_name,
+            **self.model_kwargs,
+        )
+        logger.info('Llava-OneVision model %s loaded', model_name)
+
+    def _resolve_image(
+        self, image: str | Image.Image | None
+    ) -> Image.Image | None:
+        """Resolve image input into a PIL image."""
+        if image is None:
+            return None
+        if isinstance(image, Image.Image):
+            return image.convert('RGB')
+        if image.startswith('http'):
+            response = requests.get(image, stream=True, timeout=10)
+            response.raise_for_status()
+            return Image.open(response.raw).convert('RGB')
+        return Image.open(image).convert('RGB')
+
+    def generate(
+        self,
+        prompt: str,
+        context: list[dict[str, Any]] | None = None,
+        image: str | Image.Image | None = None,
+    ) -> str:
+        """Generate answer using Llava-OneVision."""
+        full_prompt = prompt
+        if context:
+            context_text = '\n'.join(item.get('text', '') for item in context)
+            full_prompt = (
+                'Используя следующий контекст:\n'
+                f'{context_text}\n\n'
+                'Ответьте на вопрос:\n'
+                f'{prompt}'
+            )
+
+        content: list[dict[str, str]] = [{'type': 'text', 'text': full_prompt}]
+        resolved_image = self._resolve_image(image)
+        if resolved_image is not None:
+            content.append({'type': 'image'})
+        prompt_text = self.processor.apply_chat_template(
+            [{'role': 'user', 'content': content}],
+            add_generation_prompt=True,
+        )
+
+        inputs = self.processor(
+            images=resolved_image,
+            text=prompt_text,
+            return_tensors='pt',
+        ).to(self.model.device)
+        with torch.inference_mode():
+            output = self.model.generate(
+                **inputs,
+                max_new_tokens=Config.llm_max_new_tokens,
+                do_sample=False,
+            )
+
+        generated = output[0][inputs['input_ids'].shape[-1] :]
+        return self.processor.decode(
+            generated, skip_special_tokens=True
+        ).strip()
 
 
-def _resolve_llm_backend(model: str | None) -> QwenVisionLLM:
-    """Resolve an LLM backend by model name with fallback to default."""
-    if not model or model == Config.llm_model_name:
-        return qwen_llm
-    logger.warning(
-        'Unknown model "%s". Falling back to default model "%s".',
-        model,
-        Config.llm_model_name,
-    )
-    return qwen_llm
+class GPTOSSBackend(BaseLLMBackend):
+    """Text-only backend for OpenAI gpt-oss models hosted on Hugging Face."""
+
+    supports_image = False
+
+    def __init__(self, model_name: str) -> None:
+        """Initialize text generation pipeline."""
+        logger.info('Loading text model %s...', model_name)
+        self.model_name = model_name
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        pipeline_kwargs = {
+            'torch_dtype': _resolve_torch_dtype(),
+            'device_map': _resolve_device_map(),
+        }
+        self.pipeline = pipeline(
+            task='text-generation',
+            model=model_name,
+            tokenizer=self.tokenizer,
+            **pipeline_kwargs,
+        )
+        logger.info('Text model %s loaded', model_name)
+
+    def generate(
+        self,
+        prompt: str,
+        context: list[dict[str, Any]] | None = None,
+        image: str | Image.Image | None = None,
+    ) -> str:
+        """Generate answer for text-only prompts."""
+        if image is not None:
+            raise ValueError(
+                f'Model "{self.model_name}" does not support image input'
+            )
+
+        full_prompt = prompt
+        if context:
+            context_text = '\n'.join(item.get('text', '') for item in context)
+            full_prompt = (
+                'Используя следующий контекст:\n'
+                f'{context_text}\n\n'
+                'Ответьте на вопрос:\n'
+                f'{prompt}'
+            )
+
+        outputs = self.pipeline(
+            [{'role': 'user', 'content': full_prompt}],
+            max_new_tokens=Config.llm_max_new_tokens,
+        )
+        generated = outputs[0].get('generated_text')
+        if isinstance(generated, list) and generated:
+            last_message = generated[-1]
+            if isinstance(last_message, dict):
+                return str(last_message.get('content', '')).strip()
+            return str(last_message).strip()
+        return str(generated or '').strip()
+
+
+def _build_backend(model_name: str) -> BaseLLMBackend:
+    """Instantiate backend implementation for model name."""
+    normalized = model_name.lower()
+    if 'gpt-oss' in normalized:
+        return GPTOSSBackend(model_name)
+    if 'llava-onevision' in normalized:
+        return LlavaOneVisionBackend(model_name)
+    return QwenVisionLLM(model_name)
+
+
+def _resolve_llm_backend(model: str | None) -> BaseLLMBackend:
+    """Resolve backend by requested model name with lazy caching."""
+    model_name = model or Config.llm_model_name
+    backend = _BACKENDS.get(model_name)
+    if backend is None:
+        backend = _build_backend(model_name)
+        _BACKENDS[model_name] = backend
+    return backend
 
 
 def get_llm_response(prompt, context=None, image=None, model=None) -> str:
-    """Helper function to generate a response using the global QwenVisionLLM instance.
-
-    Args:
-        prompt (str): User prompt or question.
-        context (list[dict], optional): Retrieved documents for context.
-        image (str or PIL.Image.Image, optional): Image to include in generation.
-        model (str | None, optional): Requested model identifier.
-
-    Returns:
-        str: Generated text from the LLM.
-    """
+    """Generate a response using the configured backend."""
     backend = _resolve_llm_backend(model)
 
     if Config.llm_fast_mode:

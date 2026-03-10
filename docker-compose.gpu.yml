@@ -1,0 +1,129 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_gpu_storage:/qdrant/storage
+    restart: unless-stopped
+
+  rag-web-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: multimodal-rag-gpt:gpu
+    env_file:
+      - ${GPU_ENV_FILE:-.env.gpu}
+    environment:
+      APP_MODE: web
+      BACKEND_CONFIG_PATH: /app/backend/backend_config.gpu.yaml
+      QDRANT_URL: http://qdrant:6333
+      INGEST_POLLER_ENABLED: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    gpus: all
+    ports:
+      - "18000:8000"
+    volumes:
+      - ./data/uploads:/app/data/uploads
+      - ./logs:/app/logs
+      - hf_cache:/models/hf-cache
+      - torch_cache:/models/torch-cache
+    depends_on:
+      - qdrant
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "uv",
+          "run",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live', timeout=3)",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+
+  rag-worker-gpu:
+    image: multimodal-rag-gpt:gpu
+    env_file:
+      - ${GPU_ENV_FILE:-.env.gpu}
+    environment:
+      APP_MODE: worker
+      BACKEND_CONFIG_PATH: /app/backend/backend_config.gpu.yaml
+      QDRANT_URL: http://qdrant:6333
+      INGEST_POLLER_ENABLED: "false"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    gpus: all
+    command:
+      [
+        "uv",
+        "run",
+        "uvicorn",
+        "backend.worker_app:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8010",
+      ]
+    ports:
+      - "18010:8010"
+    volumes:
+      - ./data/uploads:/app/data/uploads
+      - ./logs:/app/logs
+      - hf_cache:/models/hf-cache
+      - torch_cache:/models/torch-cache
+    depends_on:
+      - qdrant
+      - rag-web-gpu
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "uv",
+          "run",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8010/health/live', timeout=3)",
+        ]
+      interval: 20s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.7.2
+    ports:
+      - "19090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+    depends_on:
+      - rag-web-gpu
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    ports:
+      - "13001:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+volumes:
+  qdrant_gpu_storage:
+  hf_cache:
+  torch_cache:
