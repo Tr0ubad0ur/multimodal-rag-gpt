@@ -26,7 +26,10 @@ def test_enforce_quota_capacity_rejects_file_quota(monkeypatch) -> None:
     with pytest.raises(HTTPException) as exc:
         _enforce_quota_capacity(total_files_after=2, total_size_after=10)
     assert exc.value.status_code == 413
-    assert exc.value.detail == 'User file quota exceeded'
+    assert exc.value.detail == {
+        'detail': 'User file quota exceeded',
+        'error_code': 'user_file_quota_exceeded',
+    }
 
 
 def test_request_rate_limiter_blocks_after_limit() -> None:
