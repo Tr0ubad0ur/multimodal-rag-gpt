@@ -54,6 +54,7 @@ DEFAULT_ASK_RATE_LIMIT_PER_MINUTE_AUTH = 120
 DEFAULT_ASK_RATE_LIMIT_PER_MINUTE_GUEST = 40
 DEFAULT_UPLOAD_RATE_LIMIT_PER_MINUTE_AUTH = 60
 DEFAULT_UPLOAD_RATE_LIMIT_PER_MINUTE_GUEST = 20
+IMAGE_MIME_TYPES = {'image/jpeg', 'image/png', 'image/webp'}
 
 
 def _api_error(
@@ -649,7 +650,7 @@ async def _prepare_attachment_data(
     attachment_file: UploadFile | None,
     user_id: str | None,
     guest_session_id: str | None = None,
-) -> tuple[list[dict[str, str]], str | None, str | None]:
+) -> tuple[list[dict[str, str]], str | None, str | None, str | None]:
     """Prepare extra context docs from attachment id or direct multipart file."""
     ingest = _ingest_service()
 
@@ -711,7 +712,12 @@ async def _prepare_attachment_data(
                 metadata={'origin': 'chat_attachment', 'transient': True},
             )
         if user_id:
-            return [], None, stored.file_id
+            image_query_path = (
+                stored.storage_path
+                if stored.mime in IMAGE_MIME_TYPES
+                else None
+            )
+            return [], None, stored.file_id, image_query_path
         docs = [
             {
                 'text': chunk,
@@ -723,7 +729,10 @@ async def _prepare_attachment_data(
             }
             for chunk in attachment_context_chunks
         ]
-        return docs, stored.storage_path, stored.file_id
+        image_query_path = (
+            stored.storage_path if stored.mime in IMAGE_MIME_TYPES else None
+        )
+        return docs, stored.storage_path, stored.file_id, image_query_path
 
     if request_payload.attachment_id:
         if not user_id:
@@ -731,12 +740,17 @@ async def _prepare_attachment_data(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail='attachment_id is only available for authenticated users',
             )
-        _ = _resolve_attachment(
+        attachment = _resolve_attachment(
             attachment_id=request_payload.attachment_id, user_id=user_id
         )
-        return [], None, request_payload.attachment_id
+        image_query_path = None
+        if attachment.get('mime') in IMAGE_MIME_TYPES:
+            image_query_path = (
+                str(attachment.get('storage_path') or '') or None
+            )
+        return [], None, request_payload.attachment_id, image_query_path
 
-    return [], None, None
+    return [], None, None, None
 
 
 @router.post('/auth/signup')
@@ -1327,6 +1341,7 @@ async def ask_mixed(
         extra_docs,
         transient_storage_path,
         attachment_file_id,
+        image_query_path,
     ) = await _prepare_attachment_data(
         request_payload=payload,
         attachment_file=attachment,
@@ -1335,7 +1350,7 @@ async def ask_mixed(
     )
 
     effective_file_ids = list(dict.fromkeys(payload.file_ids))
-    if attachment_file_id:
+    if attachment_file_id and not image_query_path:
         effective_file_ids.append(attachment_file_id)
 
     try:
@@ -1343,8 +1358,12 @@ async def ask_mixed(
             payload.query,
             top_k=payload.top_k,
             image=payload.image,
+            image_query_path=image_query_path,
             model=payload.model,
             file_ids=effective_file_ids or None,
+            exclude_file_ids=[attachment_file_id]
+            if attachment_file_id
+            else None,
             extra_docs=extra_docs,
         )
         result['guest_session_id'] = effective_guest_session_id
@@ -1408,6 +1427,7 @@ async def ask_mixed_auth(
         extra_docs,
         transient_storage_path,
         attachment_file_id,
+        image_query_path,
     ) = await _prepare_attachment_data(
         request_payload=payload,
         attachment_file=attachment,
@@ -1415,7 +1435,7 @@ async def ask_mixed_auth(
     )
 
     effective_file_ids = list(dict.fromkeys(payload.file_ids))
-    if attachment_file_id:
+    if attachment_file_id and not image_query_path:
         effective_file_ids.append(attachment_file_id)
 
     folder_scopes: list[str] | None = None
@@ -1430,10 +1450,14 @@ async def ask_mixed_auth(
             payload.query,
             top_k=payload.top_k,
             image=payload.image,
+            image_query_path=image_query_path,
             user_id=user['id'],
             model=payload.model,
             folder_scopes=folder_scopes,
             file_ids=effective_file_ids or None,
+            exclude_file_ids=[attachment_file_id]
+            if attachment_file_id
+            else None,
             extra_docs=extra_docs,
         )
 

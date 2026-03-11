@@ -1,7 +1,11 @@
 import time
 from typing import Any, Dict, List
 
-from backend.core.embeddings import multimodal_text_embedding, text_embedding
+from backend.core.embeddings import (
+    image_embedding_from_path,
+    multimodal_text_embedding,
+    text_embedding,
+)
 from backend.monitoring.metrics import observe_rag_query
 from backend.utils.config_handler import Config
 from backend.utils.qdrant_handler import QdrantHandler
@@ -36,46 +40,69 @@ class LocalRAG:
         self,
         query: str,
         top_k: int = 5,
+        image_query_path: str | None = None,
         user_id: str | None = None,
         folder_scopes: list[str] | None = None,
         file_ids: list[str] | None = None,
+        exclude_file_ids: list[str] | None = None,
     ) -> List[Dict[str, Any]]:
         """Retrieve top-K most similar documents from Qdrant for a given query.
 
         Args:
             query (str): User text query.
             top_k (int, optional): Number of top documents to retrieve. Defaults to 5.
+            image_query_path (str | None, optional): Optional local path to an image used as the retrieval query. Defaults to None.
             user_id (str | None, optional): Filter results by user id. Defaults to None.
             folder_scopes (list[str] | None, optional): Optional folder scope filter.
             file_ids (list[str] | None, optional): Optional file filter.
+            exclude_file_ids (list[str] | None, optional): Optional file ids to remove from retrieval results, such as the query attachment itself.
 
         Returns:
             List[Dict[str, str]]: A list of dictionaries containing the retrieved documents:
                 - 'text' (str): The text content of the document chunk.
                 - 'source' (str): Source file path or metadata for the chunk.
         """
-        text_results = self.client.search(
-            query_vector=text_embedding(query),
-            top_k=top_k,
-            user_id=user_id,
-            folder_scopes=folder_scopes,
-            file_ids=file_ids,
+        excluded_ids = {str(file_id) for file_id in (exclude_file_ids or [])}
+        search_limit = top_k + len(excluded_ids)
+
+        if image_query_path:
+            image_query_vector = image_embedding_from_path(image_query_path)
+            text_results = []
+        else:
+            text_results = self._filter_excluded_results(
+                self.client.search(
+                    query_vector=text_embedding(query),
+                    top_k=search_limit,
+                    user_id=user_id,
+                    folder_scopes=folder_scopes,
+                    file_ids=file_ids,
+                ),
+                excluded_ids=excluded_ids,
+            )
+            image_query_vector = multimodal_text_embedding(query)
+        image_results = self._filter_excluded_results(
+            self.image_client.search(
+                query_vector=image_query_vector,
+                top_k=search_limit,
+                user_id=user_id,
+                folder_scopes=folder_scopes,
+                file_ids=file_ids,
+            ),
+            excluded_ids=excluded_ids,
         )
-        multimodal_query_vector = multimodal_text_embedding(query)
-        image_results = self.image_client.search(
-            query_vector=multimodal_query_vector,
-            top_k=top_k,
-            user_id=user_id,
-            folder_scopes=folder_scopes,
-            file_ids=file_ids,
-        )
-        video_results = self.video_client.search(
-            query_vector=multimodal_query_vector,
-            top_k=top_k,
-            user_id=user_id,
-            folder_scopes=folder_scopes,
-            file_ids=file_ids,
-        )
+        if image_query_path:
+            video_results = []
+        else:
+            video_results = self._filter_excluded_results(
+                self.video_client.search(
+                    query_vector=multimodal_text_embedding(query),
+                    top_k=search_limit,
+                    user_id=user_id,
+                    folder_scopes=folder_scopes,
+                    file_ids=file_ids,
+                ),
+                excluded_ids=excluded_ids,
+            )
 
         results = self._merge_results(
             text_results=text_results,
@@ -99,6 +126,24 @@ class LocalRAG:
             )
 
         return docs
+
+    def _filter_excluded_results(
+        self,
+        results: list[dict[str, Any]],
+        *,
+        excluded_ids: set[str],
+    ) -> list[dict[str, Any]]:
+        """Drop hits that refer to explicitly excluded file ids."""
+        if not excluded_ids:
+            return results
+        filtered: list[dict[str, Any]] = []
+        for item in results:
+            payload = item.get('payload', {}) or {}
+            file_id = str(payload.get('file_id') or '')
+            if file_id and file_id in excluded_ids:
+                continue
+            filtered.append(item)
+        return filtered
 
     def _merge_results(
         self,
@@ -179,10 +224,12 @@ class LocalRAG:
         query: str,
         top_k: int = 5,
         image=None,
+        image_query_path: str | None = None,
         user_id: str | None = None,
         model: str | None = None,
         folder_scopes: list[str] | None = None,
         file_ids: list[str] | None = None,
+        exclude_file_ids: list[str] | None = None,
         extra_docs: list[dict[str, str]] | None = None,
     ) -> Dict[str, Any]:
         """Generate an answer using the local LLM based on the query and optionally an image.
@@ -191,10 +238,12 @@ class LocalRAG:
             query (str): User question or prompt.
             top_k (int, optional): Number of top documents to retrieve for context. Defaults to 5.
             image (Optional[str], optional): Optional image path or URL to include in the prompt. Defaults to None.
+            image_query_path (str | None, optional): Optional local path to an attachment image used for image retrieval. Defaults to None.
             user_id (str | None, optional): Filter context by user id. Defaults to None.
             model (str | None, optional): LLM model name hint for backend routing.
             folder_scopes (list[str] | None, optional): Optional folder filter for retrieval.
             file_ids (list[str] | None, optional): Optional file filter for retrieval.
+            exclude_file_ids (list[str] | None, optional): Optional file ids to exclude from retrieval results. Defaults to None.
             extra_docs (list[dict[str, str]] | None, optional): Extra context docs from attachments.
 
         Returns:
@@ -202,7 +251,8 @@ class LocalRAG:
                 - 'answer' (str): The generated text answer from the LLM.
                 - 'retrieved_docs' (List[Dict[str, str]]): The list of retrieved documents used as context.
         """
-        query_type = 'multimodal' if image else 'text'
+        effective_image = image or image_query_path
+        query_type = 'multimodal' if effective_image else 'text'
         started = time.perf_counter()
         status = 'ok'
         docs: List[Dict[str, Any]] = []
@@ -213,13 +263,18 @@ class LocalRAG:
             docs = self.retrieve_data(
                 query,
                 top_k,
+                image_query_path=image_query_path,
                 user_id=user_id,
                 folder_scopes=folder_scopes,
                 file_ids=file_ids,
+                exclude_file_ids=exclude_file_ids,
             )
             final_docs = docs + (extra_docs or [])
             answer_text = get_llm_response(
-                query, context=final_docs, image=image, model=model
+                query,
+                context=final_docs,
+                image=effective_image,
+                model=model,
             )
             return {
                 'answer': answer_text,

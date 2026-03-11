@@ -343,6 +343,39 @@ def _resolve_llm_backend(model: str | None) -> BaseLLMBackend:
     return backend
 
 
+def _format_context_item(
+    item: dict[str, Any],
+    *,
+    idx: int,
+    remaining: int,
+) -> tuple[str | None, int]:
+    """Format one retrieved item into a compact prompt block."""
+    source = item.get('source') or 'unknown'
+    modality = item.get('modality') or 'unknown'
+    score = item.get('score')
+    preview_ref = item.get('preview_ref')
+    file_id = item.get('file_id')
+    meta_parts = [f'modality={modality}']
+    if score is not None:
+        try:
+            meta_parts.append(f'score={float(score):.4f}')
+        except (TypeError, ValueError):
+            meta_parts.append(f'score={score}')
+    if file_id:
+        meta_parts.append(f'file_id={file_id}')
+    if preview_ref:
+        meta_parts.append(f'preview_ref={preview_ref}')
+
+    text = (item.get('text') or '').strip()
+    if not text:
+        text = f'Visual candidate from source: {source}'
+    chunk = text[:remaining]
+    if not chunk:
+        return None, remaining
+    block = f'[{idx}] {source}\n' + '; '.join(meta_parts) + f'\n{chunk}'
+    return block, remaining - len(chunk)
+
+
 def get_llm_response(prompt, context=None, image=None, model=None) -> str:
     """Generate a response using the configured backend."""
     backend = _resolve_llm_backend(model)
@@ -363,24 +396,40 @@ def get_llm_response(prompt, context=None, image=None, model=None) -> str:
         limited_docs = context[: max(1, Config.rag_max_context_docs)]
         context_blocks: List[str] = []
         remaining = max(200, Config.rag_max_context_chars)
+        image_hits = sum(
+            1
+            for item in limited_docs
+            if (item.get('modality') or '') == 'image'
+        )
         for idx, item in enumerate(limited_docs, start=1):
-            source = item.get('source') or 'unknown'
-            text = (item.get('text') or '').strip()
-            if not text:
-                continue
-            chunk = text[:remaining]
-            context_blocks.append(f'[{idx}] {source}\n{chunk}')
-            remaining -= len(chunk)
+            block, remaining = _format_context_item(
+                item, idx=idx, remaining=remaining
+            )
+            if block:
+                context_blocks.append(block)
             if remaining <= 0:
                 break
 
         combined_context = '\n\n'.join(context_blocks)
-        combined_prompt = (
-            'Ответь кратко и по делу, опираясь только на контекст ниже. '
-            'Если данных недостаточно, так и напиши.\n\n'
-            f'Контекст:\n{combined_context}\n\n'
-            f'Вопрос: {prompt}'
-        )
+        if image is not None and image_hits > 0:
+            combined_prompt = (
+                'Перед тобой изображение-запрос пользователя и результаты '
+                'retrieval по визуальному сходству.\n'
+                'Опирайся на приложенное изображение и на найденные кандидаты '
+                'ниже. Если среди кандидатов есть визуально похожие изображения, '
+                'прямо скажи, что они найдены, кратко опиши, чем они похожи, и '
+                'сошлись на источники. Не игнорируй найденные image-кандидаты '
+                'только потому, что у них мало текста.\n\n'
+                f'Контекст:\n{combined_context}\n\n'
+                f'Вопрос: {prompt}'
+            )
+        else:
+            combined_prompt = (
+                'Ответь кратко и по делу, опираясь только на контекст ниже. '
+                'Если данных недостаточно, так и напиши.\n\n'
+                f'Контекст:\n{combined_context}\n\n'
+                f'Вопрос: {prompt}'
+            )
         return backend.generate(combined_prompt, context=None, image=image)
 
     return backend.generate(prompt, context=None, image=image)
